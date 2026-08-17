@@ -79,6 +79,21 @@ function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,m=>({'&':'&amp;',
 function show(id){$(id)?.classList.remove('hidden')}
 function hide(id){$(id)?.classList.add('hidden')}
 function setMessage(id,msg,type='info'){const el=$(id);if(!el)return;el.textContent=msg;el.className=`form-message ${type}`;}
+function switchAuthMode(mode){
+  const loginForm=$('#formLogin'), registerForm=$('#formRegister');
+  const loginBtn=$('#btnShowLogin'), registerBtn=$('#btnShowRegister');
+  const isRegister=mode==='register';
+  if(!loginForm||!registerForm)return;
+  loginForm.style.display=isRegister?'none':'';
+  registerForm.style.display=isRegister?'':'none';
+  loginForm.setAttribute('aria-hidden',isRegister?'true':'false');
+  registerForm.setAttribute('aria-hidden',isRegister?'false':'true');
+  loginBtn?.classList.toggle('active',!isRegister);
+  registerBtn?.classList.toggle('active',isRegister);
+  loginBtn?.setAttribute('aria-selected',String(!isRegister));
+  registerBtn?.setAttribute('aria-selected',String(isRegister));
+  if(isRegister){$('#regUsername')?.focus();}else{$('#loginUsername')?.focus();}
+}
 function authHeaders(extra={}){return {...(extra||{})};}
 function postJSON(url,body,opts={}){return fetch(API+url,{method:opts.method||'POST',headers:authHeaders({'Content-Type':'application/json',...(opts.headers||{})}),body:body===undefined?undefined:JSON.stringify(body),credentials:'include'}).then(async r=>{let d={};try{d=await r.json()}catch{};if(!r.ok)throw Object.assign(new Error(d.message||`Erro ${r.status} de comunicação com o servidor.`),{data:d,status:r.status});return d;});}
 async function getJSON(url){const r=await fetch(API+url,{credentials:'include',headers:authHeaders()});let d={};try{d=await r.json()}catch{};if(!r.ok)throw Object.assign(new Error(d.message||`Erro ${r.status} ao carregar o jogo.`),{data:d,status:r.status});return d;}
@@ -160,6 +175,8 @@ function bindStaticEvents(){
   };
   $('#formLogin').onsubmit=login;
   $('#formRegister').onsubmit=register;
+  $('#btnShowLogin').onclick=()=>switchAuthMode('login');
+  $('#btnShowRegister').onclick=()=>switchAuthMode('register');
   $('#brandHome').onclick=()=>navigate('lobby');
   $('#btnPlay').onclick=()=>navigate('play');
   $('#btnShop').onclick=()=>openShop('official');
