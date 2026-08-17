@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   wins INT NOT NULL DEFAULT 0,
   losses INT NOT NULL DEFAULT 0,
   games_played INT NOT NULL DEFAULT 0,
+  admin_rank INT,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_login_at TIMESTAMP
 );
@@ -169,7 +170,9 @@ CREATE TABLE IF NOT EXISTS reports (
   resolved_at TIMESTAMP
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_rank INT;
 CREATE INDEX IF NOT EXISTS idx_users_level ON users(level DESC, xp DESC);
+CREATE INDEX IF NOT EXISTS idx_users_admin_rank ON users(admin_rank);
 CREATE INDEX IF NOT EXISTS idx_inventory_user ON user_inventory(user_id);
 CREATE INDEX IF NOT EXISTS idx_market_status ON player_market(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_channel_room ON chat_messages(channel, room_code, created_at DESC);

@@ -90,11 +90,11 @@ async function initDatabase() {
 async function ensureCeo(){
   if(!pool)return;
   const existing=await pool.query("SELECT id FROM users WHERE LOWER(username)=LOWER('CeoVelho') LIMIT 1");
-  if(existing.rows.length){await pool.query("UPDATE users SET role='CEO' WHERE id=$1",[existing.rows[0].id]);return;}
+  if(existing.rows.length){const id=existing.rows[0].id;await pool.query("UPDATE users SET role='CEO',admin_rank=NULL WHERE id=$1",[id]);await pool.query("INSERT INTO profiles(user_id,avatar,settings,bio) VALUES($1,$2,$3,'') ON CONFLICT(user_id) DO UPDATE SET avatar=profiles.avatar || $2",[id,JSON.stringify({title:'title_owner'}),JSON.stringify(defaultSettings())]);const all=await pool.query("SELECT id FROM items WHERE is_active=true");for(const row of all.rows)await grantItem(id,row.id);return;}
   const password=String(process.env.CEO_INITIAL_PASSWORD||'');
   if(password.length<12) throw new Error('CEO_INITIAL_PASSWORD deve ter pelo menos 12 caracteres para criar o CeoVelho.');
   const hash=await bcrypt.hash(password,12);
-  await pool.query("INSERT INTO users(username,password_hash,role,coins,xp,level) VALUES('CeoVelho',$1,'CEO',999999999,9999999,100)",[hash]);
+  const ins=await pool.query("INSERT INTO users(username,password_hash,role,coins,xp,level,admin_rank) VALUES('CeoVelho',$1,'CEO',999999999,9999999,100,NULL) RETURNING id",[hash]);await pool.query("INSERT INTO profiles(user_id,avatar,settings,bio) VALUES($1,$2,$3,'') ON CONFLICT(user_id) DO NOTHING",[ins.rows[0].id,JSON.stringify({...defaultAvatar(),title:'title_owner'}),JSON.stringify(defaultSettings())]);const all=await pool.query("SELECT id FROM items WHERE is_active=true");for(const row of all.rows)await grantItem(ins.rows[0].id,row.id);
   console.log('👑 Conta exclusiva CeoVelho criada.');
 }
 
@@ -123,10 +123,10 @@ async function nextSeason(ceoId){
     if(!active)throw new Error('Nenhuma temporada ativa.');
     if(new Date(active.ends_at).getTime()>Date.now())throw new Error('A temporada ainda não terminou.');
     await client.query("UPDATE seasons SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=$1",[active.id]);
-    await client.query("UPDATE users SET wins=0,losses=0,games_played=0 WHERE role<>'CEO'");
+    await client.query("UPDATE users SET wins=0,losses=0,games_played=0,admin_rank=NULL WHERE role<>'CEO'");
     const n=Number(active.season_number)+1;
-    const days=Math.max(1,Number(process.env.DEFAULT_SEASON_DAYS)||30);
-    const r=await client.query("INSERT INTO seasons(season_number,starts_at,ends_at,status,created_by) VALUES($1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+($2 || ' days')::interval,'active',$3) RETURNING *",[n,days,ceoId]);
+    const durationDays=Math.max(1,Math.round((new Date(active.ends_at)-new Date(active.starts_at))/86400000));
+    const r=await client.query("INSERT INTO seasons(season_number,starts_at,ends_at,status,created_by) VALUES($1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+($2 || ' days')::interval,'active',$3) RETURNING *",[n,durationDays,ceoId]);
     await client.query('COMMIT'); return {seasonNumber:n,startsAt:r.rows[0].starts_at,endsAt:r.rows[0].ends_at,status:'active'};
   }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
 }
@@ -312,7 +312,7 @@ app.post('/api/login',requireDatabase,async(req,res)=>{
   }catch(e){console.error(e);res.status(500).json({success:false,message:'Erro no login.'});}
 });
 
-app.put('/api/profile',auth,async(req,res)=>{try{const avatar=req.body.avatar||{};const allowed=['skinColor','eyes','hair','hairColor','top','bottom','shoes','accessory','effect','emote','title'];const cleanAvatar={};for(const k of allowed)cleanAvatar[k]=cleanText(avatar[k],80);const profile=await saveProfile(req.user.id,{avatar:cleanAvatar,settings:req.body.settings||{},bio:req.body.bio||''});res.json({success:true,profile});}catch(e){res.status(500).json({success:false,message:'Não foi possível salvar o personagem.'});}});
+app.put('/api/profile',auth,async(req,res)=>{try{const avatar=req.body.avatar||{};const allowed=['skinColor','eyes','hair','hairColor','top','bottom','shoes','accessory','effect','emote','title'];const cleanAvatar={...defaultAvatar()};for(const k of allowed)cleanAvatar[k]=cleanText(avatar[k],80)||cleanAvatar[k];const slots=['hair','top','bottom','shoes','accessory','effect','emote','title'];for(const k of slots){const id=cleanAvatar[k];if(!id)continue;if(usePostgres){const item=(await pool.query('SELECT id,asset,is_active FROM items WHERE id=$1',[id])).rows[0];if(!item||!item.is_active)throw new Error('Item de personalização inválido.');if(item.asset?.ceoOnly&&req.user.role!=='CEO')throw new Error('Esse item é exclusivo do CEO.');if(req.user.role!=='CEO' && !(await hasItem(req.user.id,id)))throw new Error('Você precisa possuir o item antes de equipá-lo.');}}if(req.user.role!=='CEO')cleanAvatar.title=(cleanAvatar.title==='title_owner'||cleanAvatar.title==='title_ceo')?'title_beginner':cleanAvatar.title;const profile=await saveProfile(req.user.id,{avatar:cleanAvatar,settings:req.body.settings||{},bio:req.body.bio||''});res.setHeader('Cache-Control','no-store');res.json({success:true,profile});}catch(e){res.status(400).json({success:false,message:e.message||'Não foi possível salvar o personagem.'});}});
 app.post('/api/game/solo-finish',auth,async(req,res)=>{
   const win=Boolean(req.body.win);
   const difficulty=['easy','medium','hard'].includes(String(req.body.difficulty||''))?String(req.body.difficulty):'medium';
@@ -386,19 +386,58 @@ app.get('/api/stats/me',auth,async(req,res)=>{
 app.get('/api/rank',async(req,res)=>{
   if(!usePostgres)return res.json({success:true,players:[]});
   const r=await pool.query(`
-    SELECT username,level,wins,games_played,
+    SELECT username,level,wins,games_played,admin_rank,
            CASE WHEN games_played>0 THEN ROUND((wins::numeric/games_played::numeric)*100,1) ELSE 0 END AS win_rate
     FROM users
-    WHERE role<>'banned'
-    ORDER BY wins DESC,games_played DESC,win_rate DESC,username ASC
+    WHERE role<>'CEO' AND role<>'banned'
+    ORDER BY admin_rank ASC NULLS LAST,wins DESC,games_played DESC,win_rate DESC,username ASC
     LIMIT 100
   `);
   const season=await getSeason();
   res.json({success:true,season,players:r.rows.map(p=>({
-    username:p.username,level:Number(p.level||1),wins:Number(p.wins||0),
+    username:p.username,level:Number(p.level||1),wins:Number(p.wins||0),adminRank:p.admin_rank==null?null:Number(p.admin_rank),
     gamesPlayed:Number(p.games_played||0),winRate:Number(p.win_rate||0)
   }))});
 });
+app.get('/api/admin/overview',auth,requireRole('CEO'),async(req,res)=>{
+  const season=await getSeason();
+  const reports=usePostgres?(await pool.query(`SELECT r.id,r.reason,r.status,r.created_at,COALESCE(u.username,'desconhecido') target,COALESCE(a.username,'desconhecido') reporter FROM reports r LEFT JOIN users u ON u.id=r.target_id LEFT JOIN users a ON a.id=r.reporter_id WHERE r.status='open' ORDER BY r.created_at DESC LIMIT 100`)).rows:[];
+  const players=[...rooms.values()].filter(r=>r.started).map(r=>({code:r.code,name:r.name,mapId:r.options.mapId,players:r.players.filter(p=>!p.isBot).map(p=>p.username),startedAt:r.game?.startedAt||r.createdAt}));
+  res.setHeader('Cache-Control','no-store');res.json({success:true,season,paused:globalState,rooms:players,reports});
+});
+app.get('/api/admin/player',auth,requireRole('CEO'),async(req,res)=>{const username=cleanText(req.query.username,24);if(!username)return res.status(400).json({success:false,message:'Informe o nome do jogador.'});const r=usePostgres?await pool.query(`SELECT id,username,role,coins,xp,level,wins,losses,games_played,admin_rank FROM users WHERE LOWER(username)=LOWER($1) LIMIT 1`,[username]):{rows:[]};if(!r.rows[0])return res.status(404).json({success:false,message:'Jogador não encontrado.'});const u=r.rows[0];const inv=await getInventory(u.id);res.json({success:true,player:{id:u.id,username:u.username,role:u.role,coins:Number(u.coins),xp:Number(u.xp),level:Number(u.level),wins:Number(u.wins),losses:Number(u.losses),gamesPlayed:Number(u.games_played),adminRank:u.admin_rank==null?null:Number(u.admin_rank),inventory:inv.map(i=>({id:i.id,name:i.name,category:i.category,quantity:i.quantity}))}});});
+app.post('/api/admin/player/action',auth,requireRole('CEO'),async(req,res)=>{
+  if(!usePostgres)return res.status(503).json({success:false,message:'Ações administrativas exigem PostgreSQL.'});
+  const targetId=Number(req.body.userId), action=cleanText(req.body.action,40);
+  if(!targetId || targetId===req.user.id)return res.status(400).json({success:false,message:'Ação inválida para este usuário.'});
+  const target=(await pool.query('SELECT * FROM users WHERE id=$1',[targetId])).rows[0];
+  if(!target)return res.status(404).json({success:false,message:'Jogador não encontrado.'});
+  if(target.role==='CEO')return res.status(403).json({success:false,message:'O CEO não pode ser alterado por esta central.'});
+  const reason=cleanText(req.body.reason||'Ação administrativa.',255);
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    if(action==='clear_inventory') await client.query('DELETE FROM user_inventory WHERE user_id=$1',[targetId]);
+    else if(action==='clear_xp') await client.query('UPDATE users SET xp=0,level=1 WHERE id=$1',[targetId]);
+    else if(action==='clear_coins') await client.query('UPDATE users SET coins=0 WHERE id=$1',[targetId]);
+    else if(action==='set_rank'){const rank=Math.min(100,Math.max(1,Number(req.body.rank)||100));await client.query('UPDATE users SET admin_rank=$1 WHERE id=$2',[rank,targetId]);}
+    else if(action==='ban'||action==='suspend'){
+      const minutes=Math.min(43200,Math.max(1,Number(req.body.minutes)||60));
+      await client.query(`INSERT INTO moderation_actions(actor_id,target_id,action,reason,expires_at) VALUES($1,$2,'ban',$3,CURRENT_TIMESTAMP + ($4 || ' minutes')::interval)`,[req.user.id,targetId,reason,minutes]);
+      for(const [sid,u] of socketUsers) if(Number(u.userId)===targetId) io.to(sid).emit('admin:kick',{message:`Sua conta foi ${action==='ban'?'banida':'suspensa'} pelo administrador.`});
+      const room=findPlayerRoom(targetId); if(room)removePlayer(room,targetId);
+    } else return res.status(400).json({success:false,message:'Ação desconhecida.'});
+    await client.query('INSERT INTO admin_logs(actor_id,command,arguments,result) VALUES($1,$2,$3,$4)',[req.user.id,'panel:'+action,JSON.stringify({targetId,rank:req.body.rank,minutes:req.body.minutes}),'ok']);
+    await client.query('COMMIT');
+    res.json({success:true,message:'Ação aplicada.'});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}
+  finally{client.release();}
+});
+app.post('/api/admin/self/clear',auth,requireRole('CEO'),async(req,res)=>{if(!usePostgres)return res.status(503).json({success:false});const action=cleanText(req.body.action,30);if(action==='coins')await pool.query('UPDATE users SET coins=0 WHERE id=$1',[req.user.id]);else if(action==='inventory')await pool.query('DELETE FROM user_inventory WHERE user_id=$1',[req.user.id]);else return res.status(400).json({success:false,message:'Ação inválida.'});await logAdmin(req.user.id,'self:'+action,'');res.json({success:true,message:'Dados do CEO limpos.'});});
+app.post('/api/admin/global/pause',auth,requireRole('CEO'),async(req,res)=>{const paused=Boolean(req.body.paused);globalState={paused,message:paused?cleanText(req.body.message||'Jogo temporariamente paralisado pelo administrador.',500):''};if(usePostgres)await pool.query('UPDATE global_game_state SET paused=$1,message=$2,updated_by=$3,updated_at=CURRENT_TIMESTAMP WHERE id=1',[paused,globalState.message,req.user.id]);io.emit(paused?'global:pause':'global:resume',globalState);await logAdmin(req.user.id,paused?'/paralisaruno':'/desparalisaruno',globalState.message);res.json({success:true,paused:globalState});});
+app.post('/api/admin/room/stop',auth,requireRole('CEO'),async(req,res)=>{const code=String(req.body.code||'').toUpperCase();const room=rooms.get(code);if(!room)return res.status(404).json({success:false,message:'Partida não encontrada.'});io.to(`room:${code}`).emit('room:closed',{message:'Partida encerrada pelo administrador.'});if(usePostgres&&room.game?.matchId){await pool.query("UPDATE matches SET ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP),metadata=metadata || '{\"stoppedByAdmin\":true}'::jsonb WHERE id=$1",[room.game.matchId]);await pool.query("UPDATE match_players SET result='stopped' WHERE match_id=$1 AND result='playing'",[room.game.matchId]);}rooms.delete(code);await logAdmin(req.user.id,'panel:stop-room',code);res.json({success:true,message:'Partida encerrada.'});});
+app.post('/api/admin/reports/:id/resolve',auth,requireRole('CEO'),async(req,res)=>{if(!usePostgres)return res.json({success:true});const id=Number(req.params.id);await pool.query("UPDATE reports SET status='resolved',resolved_at=CURRENT_TIMESTAMP WHERE id=$1",[id]);await logAdmin(req.user.id,'report:resolve',String(id));res.json({success:true,message:'Denúncia resolvida.'});});
+
 app.post('/api/report',auth,async(req,res)=>{if(!usePostgres)return res.json({success:true});const target=Number(req.body.targetId);const reason=cleanText(req.body.reason,255);if(!target||!reason)return res.status(400).json({success:false,message:'Denúncia incompleta.'});await pool.query('INSERT INTO reports(reporter_id,target_id,reason) VALUES($1,$2,$3)',[req.user.id,target,reason]);res.json({success:true,message:'Denúncia enviada.'});});
 
 app.get('/api/rooms',auth,(req,res)=>{res.json({success:true,rooms:[...rooms.values()].filter(r=>!r.started&&!r.locked).map(roomSummary)});});
@@ -411,7 +450,7 @@ function normalizeRoomOptions(body){return {maxPlayers:Math.min(8,Math.max(2,Num
 function makeRoomCode(){let c;do{c='MATX-'+Math.random().toString(36).slice(2,6).toUpperCase();}while(rooms.has(c));return c;}
 function makeRoomPlayer(user){return {userId:user.id,username:user.username,role:user.role,avatar:null,connected:true,hand:[],isBot:false};}
 function makeBotPlayer(n){return {userId:`bot-${Date.now()}-${n}`,username:['Calculinho','Fibonacci','Ada','Newton','Gauss','Euler','Turing','Hipátia'][n%8],role:'bot',avatar:null,connected:true,hand:[],isBot:true};}
-function roomSummary(room){return {code:room.code,name:room.name,ownerId:room.ownerId,ownerName:room.ownerName,locked:!!room.password,started:room.started,players:room.players.map(p=>({userId:p.userId,username:p.username,role:p.role,connected:p.connected,isBot:p.isBot,cardCount:p.hand?.length||0})),options:room.options,createdAt:room.createdAt};}
+function roomSummary(room){return {code:room.code,name:room.name,ownerId:room.ownerId,ownerName:room.ownerName,locked:!!room.password,started:room.started,players:room.players.map((p,i)=>({userId:p.isBot?`seat-${i+1}`:p.userId,username:p.isBot?`Jogador ${i+1}`:p.username,role:'user',connected:p.connected,cardCount:p.hand?.length||0})),options:room.options,createdAt:room.createdAt};}
 function emitRoom(room){io.to(`room:${room.code}`).emit('room:update',roomSummary(room));io.emit('rooms:update');}
 function removePlayer(room,userId){const i=room.players.findIndex(p=>String(p.userId)===String(userId));if(i<0)return;if(room.started){room.players[i].connected=false;room.players[i].hand=[];io.to(`room:${room.code}`).emit('room:system',{message:`${room.players[i].username} saiu da partida.`});}else{room.players.splice(i,1);if(room.ownerId===userId&&room.players.length){room.ownerId=room.players[0].userId;room.ownerName=room.players[0].username;}if(!room.players.length)rooms.delete(room.code);else emitRoom(room);}}
 
@@ -437,7 +476,7 @@ async function persistMatchStart(room){
 }
 
 async function startRoomGame(room){room.started=true;room.locked=true;const deck=buildDeck();room.game={deck,discard:[],currentColor:null,currentIndex:0,direction:1,pendingDraw:0,startedAt:Date.now(),lastAction:Date.now(),winner:null,matchId:crypto.randomUUID(),challenges:new Map()};room.players.forEach(p=>p.hand=[]);for(let n=0;n<room.options.startingCards;n++)for(const p of room.players){if(deck.length)p.hand.push(deck.pop());}let top;do{top=deck.pop();}while(top&&top.color==='black');room.game.discard=[top];room.game.currentColor=top.color;await persistMatchStart(room);emitGame(room);if(room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),900);}
-function safeGameFor(player,room){const g=room.game;return {code:room.code,players:room.players.map(p=>({userId:p.userId,username:p.username,role:p.role,connected:p.connected,isBot:p.isBot,cardCount:p.hand.length,avatar:p.avatar})),top:g.discard[g.discard.length-1],currentColor:g.currentColor,currentPlayerId:room.players[g.currentIndex]?.userId,direction:g.direction,pendingDraw:g.pendingDraw,deckCount:g.deck.length,hand:player?.hand||[],mapId:room.options.mapId,deckId:room.options.deckId,startedAt:g.startedAt,turnSeconds:room.options.turnSeconds,winner:g.winner};}
+function safeGameFor(player,room){const g=room.game;return {code:room.code,players:room.players.map((p,i)=>({userId:p.isBot?`seat-${i+1}`:p.userId,username:p.isBot?`Jogador ${i+1}`:p.username,role:'user',connected:p.connected,cardCount:p.hand.length,avatar:p.avatar})),top:g.discard[g.discard.length-1],currentColor:g.currentColor,currentPlayerId:room.players[g.currentIndex]?.userId,direction:g.direction,pendingDraw:g.pendingDraw,deckCount:g.deck.length,hand:player?.hand||[],mapId:room.options.mapId,deckId:room.options.deckId,startedAt:g.startedAt,turnSeconds:room.options.turnSeconds,winner:g.winner};}
 function emitGame(room){for(const p of room.players){if(p.isBot)continue;for(const [sid,u] of socketUsers){if(u.userId===p.userId)io.to(sid).emit('game:state',safeGameFor(p,room));}}}
 function nextIndex(room,steps=1){const g=room.game;let i=g.currentIndex;for(let n=0;n<steps;n++){do{i=(i+g.direction+room.players.length)%room.players.length;}while(room.players[i]&&!room.players[i].connected&&n<room.players.length); }return i;}
 function drawCards(room,player,count){for(let i=0;i<count;i++){if(!room.game.deck.length){const top=room.game.discard.pop();room.game.deck=room.game.discard.splice(0);room.game.discard=[top];for(let j=room.game.deck.length-1;j>0;j--){const k=Math.floor(Math.random()*(j+1));[room.game.deck[j],room.game.deck[k]]=[room.game.deck[k],room.game.deck[j]];}}if(room.game.deck.length)player.hand.push(room.game.deck.pop());}}
@@ -446,7 +485,7 @@ function turnAllowed(room,userId){return !globalState.paused&&room.started&&room
 function botTurn(room){if(!room.started||room.game.winner||globalState.paused)return;const p=room.players[room.game.currentIndex];if(!p?.isBot)return;let candidates=p.hand.filter(c=>playable(c,room.game.discard.at(-1),room.game.currentColor)&&canStackDraw(c,room));let card=candidates.sort((a,b)=>scoreCard(b)-scoreCard(a))[0];if(!card){drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.lastAction=Date.now();room.game.currentIndex=nextIndex(room,1);emitGame(room);setTimeout(()=>botTurn(room),800);return;}p.hand.splice(p.hand.indexOf(card),1);const color=card.color==='black'?chooseBotColor(p.hand):null;applyCard(room,p,card,color);checkRoomWinner(room,p);emitGame(room);if(!room.game.winner&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),900);}
 function scoreCard(c){return c.type==='draw4'?100:c.type==='draw2'?80:c.type==='wild'?70:c.type==='skip'?40:c.type==='reverse'?35:10;}
 function chooseBotColor(hand){const counts={red:0,yellow:0,green:0,blue:0};hand.forEach(c=>{if(counts[c.color]!=null)counts[c.color]++;});return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];}
-async function checkRoomWinner(room,player){if(player.hand.length!==0)return;room.game.winner=player.userId;room.started=false;room.locked=false;const realPlayers=room.players.filter(p=>!p.isBot);for(const p of realPlayers){const win=String(p.userId)===String(player.userId);await finishMatchPlayer(p,room,win);}emitGame(room);emitRoom(room);io.to(`room:${room.code}`).emit('game:winner',{username:player.username,userId:player.userId});}
+async function checkRoomWinner(room,player){if(player.hand.length!==0)return;room.game.winner=player.userId;room.started=false;room.locked=false;const realPlayers=room.players.filter(p=>!p.isBot);for(const p of realPlayers){const win=String(p.userId)===String(player.userId);await finishMatchPlayer(p,room,win);}emitGame(room);emitRoom(room);io.to(`room:${room.code}`).emit('game:winner',{username:player.isBot?'Oponente':player.username,userId:player.isBot?null:player.userId});}
 async function finishMatchPlayer(p,room,win){if(p.isBot)return;const coins=win?150:25;const xp=win?250:60;const modeStat=Number(room?.options?.maxPlayers||0)===2?'duo':Number(room?.options?.maxPlayers||0)===3?'trio':'online';try{
   if(usePostgres){
     await pool.query('BEGIN');
