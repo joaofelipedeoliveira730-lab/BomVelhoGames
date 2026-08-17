@@ -1,0 +1,1 @@
+window.io=function(){const h={};return {connected:true,on:(e,f)=>{h[e]=f;},emit:(e,p)=>{if(e==='room:start'&&h.toast){}},disconnect:()=>{}}};
