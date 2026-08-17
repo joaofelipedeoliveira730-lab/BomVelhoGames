@@ -12,22 +12,39 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: true, credentials: true } });
 const PORT = Number(process.env.PORT || 10000);
 const JWT_SECRET = process.env.JWT_SECRET;
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '';
+const io = new Server(server, { cors: { origin: FRONTEND_ORIGIN || false, credentials: true } });
 const isProduction = process.env.NODE_ENV === 'production';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
-if (!JWT_SECRET) console.warn('⚠️ JWT_SECRET não definido. Defina-o no Render antes de usar em produção.');
-const jwtSecret = JWT_SECRET || (process.env.DATABASE_URL ? crypto.createHash('sha256').update(process.env.DATABASE_URL).digest('hex') : crypto.createHash('sha256').update('unovelho-local-development-secret').digest('hex'));
+if (isProduction && (!JWT_SECRET || JWT_SECRET.length < 32)) {
+  throw new Error('JWT_SECRET ausente ou fraco. Configure no Render uma chave aleatória com pelo menos 32 caracteres.');
+}
+const jwtSecret = JWT_SECRET || crypto.randomBytes(48).toString('base64url');
 
 app.disable('x-powered-by');
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false, referrerPolicy: { policy: 'strict-origin-when-cross-origin' }, hsts: isProduction ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false }));
 app.use(express.json({ limit: '300kb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));
-app.use(express.static(path.join(__dirname)));
+app.use((req,res,next)=>{
+  const sensitive=/(^|_)(user(name)?|pass(word)?|senha|token|jwt|auth|credential)($|_)/i;
+  const keys=Object.keys(req.query||{});
+  const isPage=req.method==='GET' && !req.path.startsWith('/api/') && !req.path.startsWith('/assets/') && !req.path.startsWith('/socket.io/');
+  if(isPage && keys.some(k=>sensitive.test(k))){
+    const clean=req.path||'/';
+    return res.redirect(303,clean);
+  }
+  next();
+});
+app.get('/',(req,res)=>res.sendFile(path.join(__dirname,'index.html')));
+app.get('/index.html',(req,res)=>res.sendFile(path.join(__dirname,'index.html')));
+app.get('/style.css',(req,res)=>res.sendFile(path.join(__dirname,'style.css')));
+app.get('/app.js',(req,res)=>res.sendFile(path.join(__dirname,'app.js')));
+app.get('/service-worker.js',(req,res)=>res.sendFile(path.join(__dirname,'service-worker.js')));
+app.use('/assets',express.static(path.join(__dirname,'assets'),{dotfiles:'deny',fallthrough:false}));
 
 let pool = null;
 let usePostgres = false;
@@ -230,17 +247,19 @@ function parseCookies(req) {
 function signToken(user) {
   return jwt.sign({ id: user.id, username: user.username, role: user.role }, jwtSecret, { expiresIn: '7d' });
 }
+const AUTH_COOKIE = isProduction ? '__Host-uv_session' : 'uv_session';
 function setAuthCookie(res, token) {
-  res.setHeader('Set-Cookie', `uv_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${isProduction ? '; Secure' : ''}`);
+  const secure = isProduction ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${secure}`);
 }
 function clearAuthCookie(res) {
-  res.setHeader('Set-Cookie', `uv_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isProduction ? '; Secure' : ''}`);
+  const secure = isProduction ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
 }
 function verifyToken(token) { try { return jwt.verify(token, jwtSecret); } catch { return null; } }
 function tokenFromRequest(req) {
   const cookies = parseCookies(req);
-  const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  return cookies.uv_session || bearer || null;
+  return cookies[AUTH_COOKIE] || null;
 }
 async function getUserById(id) {
   if (usePostgres) {
@@ -351,8 +370,8 @@ async function requireDatabase(req,res,next){
     return res.status(503).json({success:false,message:'Banco de dados temporariamente indisponível.'});
   }
 }
-app.get('/api/me',auth,async(req,res)=>{const profile=await getProfile(req.user.id);res.json({success:true,user:publicUser(req.user),profile});});
-app.post('/api/logout',(req,res)=>{clearAuthCookie(res);res.json({success:true});});
+app.get('/api/me',auth,async(req,res)=>{res.setHeader('Cache-Control','no-store');const profile=await getProfile(req.user.id);res.json({success:true,user:publicUser(req.user),profile});});
+app.post('/api/logout',(req,res)=>{clearAuthCookie(res);res.setHeader('Cache-Control','no-store');res.json({success:true});});
 
 app.post('/api/register',requireDatabase,async(req,res)=>{
   const username=cleanText(req.body.username,24); const password=String(req.body.password||'');
@@ -378,7 +397,7 @@ app.post('/api/register',requireDatabase,async(req,res)=>{
       }
     }
     for(const id of ['hair_basic','shirt_basic','pants_basic','shoes_basic','emote_wave','title_beginner','deck_classic','map_classroom']) if(usePostgres){try{await grantItem(user.id,id);}catch(itemErr){console.error('starter item:',itemErr.message);}}
-    res.json({success:true,message:'Conta criada! Monte seu personagem para continuar.',token,user:publicUser(user),profile,needsCustomization:true});
+    res.setHeader('Cache-Control','no-store');res.json({success:true,message:'Conta criada! Monte seu personagem para continuar.',authenticated:true,user:publicUser(user),profile,needsCustomization:true});
   } catch(e){console.error(e);res.status(500).json({success:false,message:'Erro ao criar conta.'});}
 });
 
@@ -392,7 +411,7 @@ app.post('/api/login',requireDatabase,async(req,res)=>{
     const token=signToken(user);setAuthCookie(res,token);
     for(const id of ['hair_basic','shirt_basic','pants_basic','shoes_basic','emote_wave','title_beginner','deck_classic','map_classroom']) if(usePostgres){try{await grantItem(user.id,id);}catch(itemErr){console.error('starter item login:',itemErr.message);}}
     let profile;try{profile=await getProfile(user.id);}catch(profileErr){console.error('profile login:',profileErr.message);profile={avatar:defaultAvatar(),settings:defaultSettings(),bio:''};}
-    res.json({success:true,message:user.role==='CEO'?'Bem-vindo de volta, CEO!':'Login realizado com sucesso!',token,user:publicUser(user),profile,needsCustomization:!profile.avatar||Object.keys(profile.avatar).length===0});
+    res.setHeader('Cache-Control','no-store');res.json({success:true,message:user.role==='CEO'?'Bem-vindo de volta, CEO!':'Login realizado com sucesso!',authenticated:true,user:publicUser(user),profile,needsCustomization:!profile.avatar||Object.keys(profile.avatar).length===0});
   }catch(e){console.error(e);res.status(500).json({success:false,message:'Erro no login.'});}
 });
 
@@ -469,7 +488,13 @@ function removePlayer(room,userId){const i=room.players.findIndex(p=>String(p.us
 
 const COLORS=['red','yellow','green','blue'];
 function buildDeck(){const deck=[];for(const color of COLORS){deck.push({id:crypto.randomUUID(),color,value:'0',type:'number'});for(let n=1;n<=9;n++)for(let copy=0;copy<2;copy++)deck.push({id:crypto.randomUUID(),color,value:String(n),type:'number'});for(let copy=0;copy<2;copy++){deck.push({id:crypto.randomUUID(),color,value:'🚫',type:'skip'});deck.push({id:crypto.randomUUID(),color,value:'🔄',type:'reverse'});deck.push({id:crypto.randomUUID(),color,value:'+2',type:'draw2'});}}for(let i=0;i<4;i++){deck.push({id:crypto.randomUUID(),color:'black',value:'🌈',type:'wild'});deck.push({id:crypto.randomUUID(),color:'black',value:'+4',type:'draw4'});}for(let i=deck.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[deck[i],deck[j]]=[deck[j],deck[i]];}return deck;}
-function playable(card,top,currentColor){return card.color==='black'||card.color===currentColor||card.value===top.value;}
+function playable(card,top,currentColor){return !!card&&!!top&&(card.color==='black'||card.color===currentColor||card.value===top.value);}
+function canStackDraw(card,room){
+  const pending=Number(room?.game?.pendingDraw||0);
+  if(!pending)return true;
+  if(!room.options.stackDraw)return false;
+  return card?.type==='draw2'||card?.type==='draw4';
+}
 async function persistMatchStart(room){
   if(!room?.game?.matchId)return;
   if(usePostgres){
@@ -487,9 +512,9 @@ function safeGameFor(player,room){const g=room.game;return {code:room.code,playe
 function emitGame(room){for(const p of room.players){if(p.isBot)continue;for(const [sid,u] of socketUsers){if(u.userId===p.userId)io.to(sid).emit('game:state',safeGameFor(p,room));}}}
 function nextIndex(room,steps=1){const g=room.game;let i=g.currentIndex;for(let n=0;n<steps;n++){do{i=(i+g.direction+room.players.length)%room.players.length;}while(room.players[i]&&!room.players[i].connected&&n<room.players.length); }return i;}
 function drawCards(room,player,count){for(let i=0;i<count;i++){if(!room.game.deck.length){const top=room.game.discard.pop();room.game.deck=room.game.discard.splice(0);room.game.discard=[top];for(let j=room.game.deck.length-1;j>0;j--){const k=Math.floor(Math.random()*(j+1));[room.game.deck[j],room.game.deck[k]]=[room.game.deck[k],room.game.deck[j]];}}if(room.game.deck.length)player.hand.push(room.game.deck.pop());}}
-function applyCard(room,player,card,chosenColor){const g=room.game;g.discard.push(card);g.currentColor=card.color==='black'?(COLORS.includes(chosenColor)?chosenColor:COLORS[Math.floor(Math.random()*4)]):card.color;g.pendingDraw=0;if(card.type==='draw2')g.pendingDraw=2;if(card.type==='draw4')g.pendingDraw=4;if(card.type==='reverse'&&room.players.length>2)g.direction*=-1;let skip=card.type==='skip'||(card.type==='reverse'&&room.players.length===2);g.currentIndex=nextIndex(room,skip?2:1);}
+function applyCard(room,player,card,chosenColor){const g=room.game;g.lastAction=Date.now();g.discard.push(card);g.currentColor=card.color==='black'?(COLORS.includes(chosenColor)?chosenColor:COLORS[Math.floor(Math.random()*4)]):card.color;g.pendingDraw=0;if(card.type==='draw2')g.pendingDraw=2;if(card.type==='draw4')g.pendingDraw=4;if(card.type==='reverse'&&room.players.length>2)g.direction*=-1;let skip=card.type==='skip'||(card.type==='reverse'&&room.players.length===2);g.currentIndex=nextIndex(room,skip?2:1);}
 function turnAllowed(room,userId){return !globalState.paused&&room.started&&room.players[room.game.currentIndex]?.userId===userId;}
-function botTurn(room){if(!room.started||room.game.winner||globalState.paused)return;const p=room.players[room.game.currentIndex];if(!p?.isBot)return;let candidates=p.hand.filter(c=>playable(c,room.game.discard.at(-1),room.game.currentColor));if(room.game.pendingDraw>0&&!room.options.stackDraw)candidates=[];let card=candidates.sort((a,b)=>scoreCard(b)-scoreCard(a))[0];if(!card){drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.currentIndex=nextIndex(room,1);emitGame(room);setTimeout(()=>botTurn(room),800);return;}p.hand.splice(p.hand.indexOf(card),1);const color=card.color==='black'?chooseBotColor(p.hand):null;applyCard(room,p,card,color);checkRoomWinner(room,p);emitGame(room);if(!room.game.winner&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),900);}
+function botTurn(room){if(!room.started||room.game.winner||globalState.paused)return;const p=room.players[room.game.currentIndex];if(!p?.isBot)return;let candidates=p.hand.filter(c=>playable(c,room.game.discard.at(-1),room.game.currentColor)&&canStackDraw(c,room));let card=candidates.sort((a,b)=>scoreCard(b)-scoreCard(a))[0];if(!card){drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.lastAction=Date.now();room.game.currentIndex=nextIndex(room,1);emitGame(room);setTimeout(()=>botTurn(room),800);return;}p.hand.splice(p.hand.indexOf(card),1);const color=card.color==='black'?chooseBotColor(p.hand):null;applyCard(room,p,card,color);checkRoomWinner(room,p);emitGame(room);if(!room.game.winner&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),900);}
 function scoreCard(c){return c.type==='draw4'?100:c.type==='draw2'?80:c.type==='wild'?70:c.type==='skip'?40:c.type==='reverse'?35:10;}
 function chooseBotColor(hand){const counts={red:0,yellow:0,green:0,blue:0};hand.forEach(c=>{if(counts[c.color]!=null)counts[c.color]++;});return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];}
 async function checkRoomWinner(room,player){if(player.hand.length!==0)return;room.game.winner=player.userId;room.started=false;room.locked=false;const realPlayers=room.players.filter(p=>!p.isBot);for(const p of realPlayers){const win=String(p.userId)===String(player.userId);await finishMatchPlayer(p,room,win);}emitGame(room);emitRoom(room);io.to(`room:${room.code}`).emit('game:winner',{username:player.username,userId:player.userId});}
@@ -511,18 +536,38 @@ async function finishMatchPlayer(p,room,win){if(p.isBot)return;const coins=win?1
 
 async function getGlobalState(){if(!usePostgres)return {paused:false,message:''};const r=await pool.query('SELECT paused,message FROM global_game_state WHERE id=1');return r.rows[0]||{paused:false,message:''};}
 let globalState={paused:false,message:''};
+function enforceTurnTimeouts(){
+  const now=Date.now();
+  for(const room of rooms.values()){
+    if(!room.started||!room.game||room.game.winner)continue;
+    const current=room.players[room.game.currentIndex];
+    if(!current)continue;
+    const limit=Math.max(15,Number(room.options.turnSeconds)||45)*1000;
+    if(now-(room.game.lastAction||room.game.startedAt||now)<limit)continue;
+    if(current.isBot){botTurn(room);continue;}
+    drawCards(room,current,room.game.pendingDraw||1);
+    room.game.pendingDraw=0;
+    room.game.lastAction=now;
+    room.game.currentIndex=nextIndex(room,1);
+    emitGame(room);
+    io.to(`room:${room.code}`).emit('room:system',{message:`${current.username} perdeu o tempo e comprou carta(s).`});
+    if(room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),300);
+  }
+}
+setInterval(enforceTurnTimeouts,1000).unref();
 
-io.use(async(socket,next)=>{const token=socket.handshake.auth?.token||parseCookies({headers:socket.handshake.headers}).uv_session;const payload=token&&verifyToken(token);if(!payload)return next(new Error('unauthorized'));const user=await getUserById(payload.id);if(!user)return next(new Error('unauthorized'));const mod=await activeModeration(user.id);if(mod?.action==='ban')return next(new Error('banned'));socketUsers.set(socket.id,{userId:user.id,username:user.username,role:user.role});socket.user=user;next();});
+io.use(async(socket,next)=>{const token=parseCookies({headers:socket.handshake.headers})[AUTH_COOKIE];const payload=token&&verifyToken(token);if(!payload)return next(new Error('unauthorized'));const user=await getUserById(payload.id);if(!user)return next(new Error('unauthorized'));const mod=await activeModeration(user.id);if(mod?.action==='ban')return next(new Error('banned'));socketUsers.set(socket.id,{userId:user.id,username:user.username,role:user.role});socket.user=user;next();});
 
 io.on('connection',socket=>{
   const me=socket.user;
   socket.on('room:join',async({code,password}={})=>{const room=rooms.get(String(code||'').toUpperCase());if(!room)return socket.emit('toast',{type:'error',message:'Sala não encontrada.'});if(room.started)return socket.emit('toast',{type:'error',message:'Partida já iniciada.'});if(room.password&&room.password!==String(password||''))return socket.emit('toast',{type:'error',message:'Senha incorreta.'});if(room.players.length>=room.options.maxPlayers)return socket.emit('toast',{type:'error',message:'Sala cheia.'});if(!room.players.some(p=>p.userId===me.id))room.players.push(makeRoomPlayer(me));socket.join(`room:${room.code}`);emitRoom(room);socket.emit('room:joined',roomSummary(room));});
   socket.on('room:leave',()=>{for(const room of rooms.values())if(room.players.some(p=>p.userId===me.id)){socket.leave(`room:${room.code}`);removePlayer(room,me.id);}});
+  socket.on('room:rejoin',({roomCode}={})=>{const room=rooms.get(String(roomCode||'').toUpperCase());if(!room)return socket.emit('toast',{type:'error',message:'A sala não está mais disponível.'});const p=room.players.find(x=>String(x.userId)===String(me.id));if(!p)return socket.emit('toast',{type:'error',message:'Você não faz mais parte desta sala.'});p.connected=true;socket.join(`room:${room.code}`);socket.emit('room:joined',roomSummary(room));if(room.started)emitGame(room);else emitRoom(room);});
   socket.on('room:start',async()=>{for(const room of rooms.values())if(room.ownerId===me.id&&room.players.some(p=>p.userId===me.id)){if(room.players.length<2&&!room.options.allowBots)return socket.emit('toast',{type:'error',message:'Adicione outro jogador ou permita bots.'});if(globalState.paused)return socket.emit('toast',{type:'error',message:globalState.message});if(room.options.allowBots){while(room.players.length<room.options.maxPlayers&&room.players.length<room.options.botFill)room.players.push(makeBotPlayer(room.players.length));}if(room.players.length<2)return socket.emit('toast',{type:'error',message:'Não foi possível preencher a sala.'});await startRoomGame(room);emitRoom(room);return;}});
-  socket.on('game:play',async({cardId,chosenColor}={})=>{const room=findPlayerRoom(me.id);if(!room)return socket.emit('toast',{type:'error',message:'Você não está em uma sala.'});if(!turnAllowed(room,me.id))return socket.emit('toast',{type:'error',message:'Não é sua vez.'});const p=room.players.find(x=>x.userId===me.id);const index=p.hand.findIndex(c=>c.id===cardId||c._clientId===cardId);if(index<0)return socket.emit('toast',{type:'error',message:'Carta inválida.'});const card=p.hand[index];if(!playable(card,room.game.discard.at(-1),room.game.currentColor))return socket.emit('toast',{type:'error',message:'Carta não pode ser jogada.'});p.hand.splice(index,1);applyCard(room,p,card,chosenColor);await checkRoomWinner(room,p);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
-  socket.on('game:draw',()=>{const room=findPlayerRoom(me.id);if(!room||!turnAllowed(room,me.id))return;const p=room.players.find(x=>x.userId===me.id);drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.currentIndex=nextIndex(room,1);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
+  socket.on('game:play',async({cardId,chosenColor}={})=>{const room=findPlayerRoom(me.id);if(!room)return socket.emit('toast',{type:'error',message:'Você não está em uma sala.'});if(!turnAllowed(room,me.id))return socket.emit('toast',{type:'error',message:'Não é sua vez.'});const p=room.players.find(x=>x.userId===me.id);const index=p.hand.findIndex(c=>c.id===cardId||c._clientId===cardId);if(index<0)return socket.emit('toast',{type:'error',message:'Carta inválida.'});const card=p.hand[index];if(!playable(card,room.game.discard.at(-1),room.game.currentColor))return socket.emit('toast',{type:'error',message:'Carta não pode ser jogada.'});if(!canStackDraw(card,room))return socket.emit('toast',{type:'error',message:room.options.stackDraw?'Você só pode empilhar +2/+4 agora.':'Você precisa comprar antes de jogar.'});p.hand.splice(index,1);applyCard(room,p,card,chosenColor);await checkRoomWinner(room,p);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
+  socket.on('game:draw',()=>{const room=findPlayerRoom(me.id);if(!room||!turnAllowed(room,me.id))return;const p=room.players.find(x=>x.userId===me.id);drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.lastAction=Date.now();room.game.currentIndex=nextIndex(room,1);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
   socket.on('chat:send',async({channel,body,roomCode,receiverId}={})=>{if(!rateLimit(chatRate,me.id,10000,12))return socket.emit('toast',{type:'error',message:'Você está enviando mensagens rápido demais.'});const text=cleanText(body,500);if(!text)return;const aiModeration=await geminiModerate(text);if(!aiModeration.allowed){if(usePostgres)await pool.query('INSERT INTO reports(reporter_id,target_id,reason,status) VALUES($1,$2,$3,$4)',[me.id,me.id,'Gemini bloqueou mensagem: '+cleanText(aiModeration.reason,220),'ai-block']);return socket.emit('toast',{type:'error',message:'Mensagem bloqueada pela moderação.'});}const mod=await activeModeration(me.id);if(mod?.action==='mute')return socket.emit('toast',{type:'error',message:'Você está silenciado.'});if(text.startsWith('/')&&me.role==='CEO'){const result=await executeAdminCommand(me,text);socket.emit('admin:result',result);return;}const ch=['world','room','private'].includes(channel)?channel:'world';let room=findPlayerRoom(me.id);if(ch==='room'&&(!room||room.code!==String(roomCode||room?.code).toUpperCase()))return;let targetSocket=null;if(ch==='private'){targetSocket=[...socketUsers.entries()].find(([,u])=>Number(u.userId)===Number(receiverId))?.[0];if(!targetSocket)return socket.emit('toast',{type:'error',message:'Jogador offline.'});}const msg={channel:ch,roomCode:room?.code||null,senderId:me.id,senderName:me.username,receiverId:receiverId||null,body:text,createdAt:new Date().toISOString()};if(usePostgres)await pool.query('INSERT INTO chat_messages(channel,room_code,sender_id,receiver_id,sender_name,body) VALUES($1,$2,$3,$4,$5,$6)',[ch,msg.roomCode,me.id,receiverId||null,me.username,text]);if(ch==='world')io.emit('chat:message',msg);else if(ch==='room')io.to(`room:${room.code}`).emit('chat:message',msg);else{socket.emit('chat:message',msg);if(targetSocket)io.to(targetSocket).emit('chat:message',msg);}});
-  socket.on('disconnect',()=>{socketUsers.delete(socket.id);});
+  socket.on('disconnect',()=>{for(const room of rooms.values()){const p=room.players.find(x=>String(x.userId)===String(me.id));if(p){p.connected=false;emitRoom(room);}}socketUsers.delete(socket.id);});
 });
 function findPlayerRoom(userId){for(const room of rooms.values())if(room.players.some(p=>String(p.userId)===String(userId)))return room;return null;}
 

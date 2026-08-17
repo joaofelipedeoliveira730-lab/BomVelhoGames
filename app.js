@@ -1,11 +1,12 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const API = '/api';
-const RESOURCE_VERSION = 'unovelho-matx-v8';
-const LOCAL_RESOURCE_STATE = 'unovelho.resources.v8';
+const RESOURCE_VERSION = 'unovelho-matx-v7';
+const LOCAL_RESOURCE_STATE = 'unovelho.resources.v7';
 
 const refs = {
   maps: [
+    {id:'map_pirate',name:'Navio Pirata',thumb:'assets/maps/pirate.svg',theme:'pirate',resource:'assets/maps/pirate.svg'},
     {id:'map_saloon',name:'Saloon Clássico',thumb:'assets/maps/saloon.svg',theme:'saloon',resource:'assets/maps/saloon.svg'},
     {id:'map_classroom',name:'Sala de Aula',thumb:'assets/maps/classroom.svg',theme:'classroom',resource:'assets/maps/classroom.svg'},
     {id:'map_geometry',name:'Laboratório Geométrico',thumb:'assets/maps/geometry.svg',theme:'geometry',resource:'assets/maps/geometry.svg'},
@@ -78,7 +79,7 @@ function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,m=>({'&':'&amp;',
 function show(id){$(id)?.classList.remove('hidden')}
 function hide(id){$(id)?.classList.add('hidden')}
 function setMessage(id,msg,type='info'){const el=$(id);if(!el)return;el.textContent=msg;el.className=`form-message ${type}`;}
-function authHeaders(extra={}){const h={...(extra||{})};if(state.token)h.Authorization=`Bearer ${state.token}`;return h;}
+function authHeaders(extra={}){return {...(extra||{})};}
 function postJSON(url,body,opts={}){return fetch(API+url,{method:opts.method||'POST',headers:authHeaders({'Content-Type':'application/json',...(opts.headers||{})}),body:body===undefined?undefined:JSON.stringify(body),credentials:'include'}).then(async r=>{let d={};try{d=await r.json()}catch{};if(!r.ok)throw Object.assign(new Error(d.message||`Erro ${r.status} de comunicação com o servidor.`),{data:d,status:r.status});return d;});}
 async function getJSON(url){const r=await fetch(API+url,{credentials:'include',headers:authHeaders()});let d={};try{d=await r.json()}catch{};if(!r.ok)throw Object.assign(new Error(d.message||`Erro ${r.status} ao carregar o jogo.`),{data:d,status:r.status});return d;}
 async function resourceList(){
@@ -104,44 +105,45 @@ async function cacheGameResources(){
   }catch{if(progress)progress.textContent='ERRO NO DOWNLOAD';return false;}
 }
 async function verifyAllResources(){const urls=await resourceList(); if(!('caches' in window))return false; for(const u of urls){if(!(await isResourceCached(u)))return false;} return true;}
-async function requireMapResource(mapId){const m=refs.maps.find(x=>x.id===mapId); if(!m)return false; const url='/'+m.resource; try{if(await isResourceCached(url))return true; const c=await caches.open(RESOURCE_VERSION); const r=await fetch(url,{cache:'no-store'}); if(!r.ok)throw new Error(String(r.status)); await c.put(url,r.clone()); return true;}catch(e){console.warn('Mapa não pôde ser pré-carregado:',url,e); return true;}}
+async function requireMapResource(mapId){const m=refs.maps.find(x=>x.id===mapId);if(!m)return false;const url='/'+m.resource;const ok=await isResourceCached(url)||await ensureResource(url);if(!ok){toast('Não foi possível carregar este mapa. Verifique sua conexão e tente novamente.','error',6000);return false;}return true;}
 function showResourceMessage(){toast('Mapa ainda não está disponível neste dispositivo. Baixe os recursos novamente.','error',6000);}
 
 
-function cleanVisibleUrl(){try{const clean=location.pathname+location.hash; if(location.username||location.password||location.search){history.replaceState({},document.title,clean);}}catch(e){}}
-
-function init(){
-  cleanVisibleUrl();
-  // Nunca deixe a tela de boot presa por causa de um erro de inicialização.
-  hide('#bootScreen');
-  registerOfflineWorker();
-  document.documentElement.style.setProperty('--motion',localStorage.getItem('uv_reduced_motion')==='1'?'0':'1');
-
+function sanitizeAddressBar(){
   try{
-    bindStaticEvents();
-  }catch(err){
-    console.error('Falha ao vincular os eventos da interface:',err);
-    // A tela de autenticação continua acessível mesmo se algum recurso opcional falhar.
-    show('#authScreen');
-  }
-
-  setTimeout(async()=>{
-    try{
-      const accepted=localStorage.getItem('uno_terms_accepted')==='1';
-      const saved=(()=>{try{return JSON.parse(localStorage.getItem(LOCAL_RESOURCE_STATE)||'{}')}catch{return {}}})();
-      const complete=accepted && saved.version===RESOURCE_VERSION && await verifyAllResources();
-      if(!complete)show('#termsModal');else await bootAuth();
-    }catch(err){
-      console.error('Falha durante o boot:',err);
-      show('#authScreen');
-      hide('#termsModal');
-    }
-  },50);
+    const u=new URL(window.location.href);
+    const sensitive=/(user(name)?|pass(word)?|senha|token|jwt|auth|credential|login)/i;
+    let changed=false;
+    for(const key of [...u.searchParams.keys()]){if(sensitive.test(key)){u.searchParams.delete(key);changed=true;}}
+    if(changed || u.hash){u.hash='';window.history.replaceState({},document.title,u.pathname+(u.searchParams.toString()?`?${u.searchParams}`:''));}
+  }catch{}
 }
 
+function init(){
+  sanitizeAddressBar();
+  registerOfflineWorker();
+  document.documentElement.style.setProperty('--motion',localStorage.getItem('uv_reduced_motion')==='1'?'0':'1');
+  bindStaticEvents();
+  setTimeout(async()=>{
+    hide('#bootScreen');
+    const accepted=localStorage.getItem('uno_terms_accepted')==='1';
+    const saved=(()=>{try{return JSON.parse(localStorage.getItem(LOCAL_RESOURCE_STATE)||'{}')}catch{return {}}})();
+    if(!accepted){show('#termsModal');return;}
+    if(saved.version!==RESOURCE_VERSION) void cacheGameResources();
+    await bootAuth();
+  },350);
+}
+
+const wait=(ms)=>new Promise(r=>setTimeout(r,ms));
 async function bootAuth(){
-  try{const d=await getJSON('/me');state.user=d.user;state.profile=d.profile;state.settings=d.profile.settings;await enterApp();}
-  catch{show('#authScreen');}
+  let lastError=null;
+  for(let attempt=0;attempt<3;attempt++){
+    try{const d=await getJSON('/me');state.user=d.user;state.profile=d.profile;state.settings=d.profile.settings;await enterApp();return true;}
+    catch(err){lastError=err;if(err?.status===503){await wait(800*(attempt+1));continue;}break;}
+  }
+  show('#authScreen');
+  if(lastError?.status===503) setMessage('#loginMessage','Servidor ainda iniciando. Tente novamente em alguns segundos.','error');
+  return false;
 }
 
 function bindStaticEvents(){
@@ -149,10 +151,10 @@ function bindStaticEvents(){
   $('#btnAcceptTerms').onclick=async()=>{
     if(!$('#termsCheck').checked)return;
     const btn=$('#btnAcceptTerms');btn.disabled=true;btn.textContent='⏳ BAIXANDO RECURSOS...';
-    await cacheGameResources();
     localStorage.setItem('uno_terms_accepted','1');state.terms=true;
     hide('#termsModal');
     await registerOfflineWorker();
+    void cacheGameResources();
     startBackgroundMusic();
     await bootAuth();
   };
@@ -199,8 +201,8 @@ function bindStaticEvents(){
   window.addEventListener('beforeunload',()=>{try{state.socket?.disconnect()}catch{}});
 }
 
-async function login(e){e.preventDefault();const fd=new FormData(e.target);try{setMessage('#loginMessage','Entrando...');const d=await postJSON('/login',{username:fd.get('username'),password:fd.get('password')});state.token=d.token||state.token;state.user=d.user;state.profile=d.profile||{avatar:{},settings:{}};state.settings=state.profile.settings;setMessage('#loginMessage',d.message,'success');await enterApp();}catch(err){setMessage('#loginMessage',err.message,'error');SoundFX.bad();}}
-async function register(e){e.preventDefault();const fd=new FormData(e.target);try{setMessage('#registerMessage','Criando conta...');const d=await postJSON('/register',{username:fd.get('regUsername'),password:fd.get('regPassword')});state.token=d.token||state.token;state.user=d.user;state.profile=d.profile||{avatar:{},settings:{}};state.settings=state.profile.settings;setMessage('#registerMessage',d.message,'success');await enterApp(true);}catch(err){setMessage('#registerMessage',err.message,'error');SoundFX.bad();}}
+async function login(e){e.preventDefault();const fd=new FormData(e.target);try{setMessage('#loginMessage','Entrando...');const d=await postJSON('/login',{username:fd.get('username'),password:fd.get('password')});state.token=null;state.user=d.user;state.profile=d.profile||{avatar:{},settings:{}};state.settings=state.profile.settings;setMessage('#loginMessage',d.message,'success');await enterApp();}catch(err){setMessage('#loginMessage',err.message,'error');SoundFX.bad();}}
+async function register(e){e.preventDefault();const fd=new FormData(e.target);try{setMessage('#registerMessage','Criando conta...');const d=await postJSON('/register',{username:fd.get('regUsername'),password:fd.get('regPassword')});state.token=null;state.user=d.user;state.profile=d.profile||{avatar:{},settings:{}};state.settings=state.profile.settings;setMessage('#registerMessage',d.message,'success');await enterApp(true);}catch(err){setMessage('#registerMessage',err.message,'error');SoundFX.bad();}}
 
 async function enterApp(forceCustomize=false){
   hide('#authScreen');show('#appScreen');
@@ -211,6 +213,7 @@ async function enterApp(forceCustomize=false){
   try{state.inventory=(await getJSON('/inventory')).items||[];}catch(e){state.inventory=[];toast('Inventário ainda não pôde ser carregado.','error',3500);}
   updateUserUI();
   connectSocket();
+  setTimeout(restoreSession,120);
   renderCharacter('#heroCharacter',state.profile.avatar);renderCharacter('#profileCharacterLarge',state.profile.avatar);renderCharacter('#customCharacter',state.profile.avatar);
   loadMiniRank();renderMapPreview();loadAchievementsPreview();populateCustomizer();applySettings();
   if(forceCustomize||!state.profile.avatar?.hair)openCustomize();
@@ -227,6 +230,19 @@ function itemName(id){return state.items.find(x=>x.id===id)?.name||({title_begin
 function navigate(view){
   if(view==='lobby'&&!state.user)return;
   $$('.view').forEach(v=>v.classList.add('hidden'));const target=$(`#${view}View`);if(target)target.classList.remove('hidden');state.previousView=state.currentView;state.currentView=view;window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function restoreSession(){
+  try{
+    const savedView=sessionStorage.getItem('uno50_view');
+    const savedRoom=JSON.parse(sessionStorage.getItem('uno50_room')||'null');
+    if(savedRoom?.code&&state.socket?.connected){
+      state.currentRoom={code:String(savedRoom.code).toUpperCase()};
+      state.socket.emit('room:rejoin',{roomCode:state.currentRoom.code});
+    }else if(savedView&&savedView!=='game'&&savedView!=='room'&&savedView!=='lobby'&&$(`#${savedView}View`)){
+      navigate(savedView);
+    }
+  }catch{}
 }
 
 function preserveSessionOnViewportChange(){
@@ -247,7 +263,7 @@ document.addEventListener('visibilitychange',()=>{
 function connectSocket(){
   if(state.socket?.connected)return;
   state.socket=io({withCredentials:true,auth:state.token?{token:state.token}:{}});
-  state.socket.on('connect',()=>toast('Conectado ao servidor online.','success',1800));
+  state.socket.on('connect',()=>{toast('Conectado ao servidor online.','success',1800);restoreSession();});
   state.socket.on('connect_error',e=>toast('Conexão online indisponível: '+(e.message||'erro'),'error'));
   state.socket.on('rooms:update',()=>{if(state.currentView==='rooms')loadRooms();});
   state.socket.on('room:joined',room=>{state.currentRoom=room;renderRoom(room);navigate('room');});
@@ -279,11 +295,11 @@ function joinSelectedRoom(){if(!state.roomToJoin)return;const r=state.roomToJoin
 function renderRoom(room){$('#roomTitle').textContent=room.name;$('#roomCodeBadge').textContent=room.code;$('#roomOptionsText').textContent=`${room.players.length}/${room.options.maxPlayers} jogadores • ${room.options.turnSeconds}s • ${room.options.difficulty} • ${room.options.math?'UNO':''}`;$('#btnStartRoom').style.display=String(room.ownerId)===String(state.user.id)&&!room.started?'inline-flex':'none';$('#roomPlayers').innerHTML=room.players.map((p,i)=>`<div class="room-player ${String(p.userId)===String(room.ownerId)?'host':''}"><div class="player-avatar">${p.isBot?'🤖':'🙂'}</div><div><b>${escapeHtml(p.username)}</b><small>${String(p.userId)===String(room.ownerId)?'👑 Criador':'Jogador'}</small></div><span>${p.connected?'●':'○'}</span></div>`).join('');$('#roomMapBanner').className=`room-map-banner map-${roomTheme(room.options.mapId)}`;$('#roomMapBanner').innerHTML=`<div><span>🗺️ MAPA</span><b>${escapeHtml(refs.maps.find(m=>m.id===room.options.mapId)?.name||room.options.mapId)}</b></div>`;}
 function leaveRoom(){if(state.socket)state.socket.emit('room:leave');state.currentRoom=null;navigate('rooms');loadRooms();}
 
-async function startSolo(difficulty){try{SoundFX.click();state.solo=createSolo(difficulty);const soloMap=refs.maps.find(m=>m.theme===state.solo.mapTheme)||refs.maps[0];await requireMapResource(soloMap.id);navigate('game');document.body.classList.add('in-game');const arena=$('#arenaShell');if(arena)arena.className=`arena-shell solo-arena map-${state.solo.mapTheme}`;const ref=$('.arena-reference');if(ref)ref.style.display='block';renderSoloGame();toast(`Modo ${difficulty==='easy'?'Fácil':difficulty==='medium'?'Médio':'Difícil'} iniciado.`,'success');}catch(err){console.error('Falha ao iniciar partida solo:',err);state.solo=null;document.body.classList.remove('in-game');toast('Não foi possível iniciar a partida. Tente novamente.','error',5000);}}
+async function startSolo(difficulty){SoundFX.click();state.solo=createSolo(difficulty);const soloMap=refs.maps.find(m=>m.theme===state.solo.mapTheme)||refs.maps[0];if(!(await requireMapResource(soloMap.id))){state.solo=null;return;}navigate('game');$('#arenaShell').className=`arena-shell solo-arena map-${state.solo.mapTheme}`;$('.arena-reference').style.display='block';renderSoloGame();toast(`Modo ${difficulty==='easy'?'Fácil':difficulty==='medium'?'Médio':'Difícil'} iniciado.`,'success');}
 function createSolo(difficulty){const deck=createDeck();const player=deck.splice(0,7);const bot=deck.splice(0,7);let top=deck.pop();while(top.color==='black'){deck.unshift(top);top=deck.pop();}return{difficulty,deck,player,bot,discard:top,_discardPile:[],color:top.color,turn:'player',pending:null,botName:difficulty==='hard'?'Calculinho Supremo':difficulty==='medium'?'Calculinho':'Treininho',mapTheme:['saloon','neon','geometry'][Math.floor(Math.random()*3)],uno:false,round:1};}
 function createDeck(){const d=[];for(const color of SOLO_COLORS){d.push({id:crypto.randomUUID(),color,value:'0',type:'number'});for(let n=1;n<=9;n++)for(let copy=0;copy<2;copy++)d.push({id:crypto.randomUUID(),color,value:String(n),type:'number'});for(let copy=0;copy<2;copy++){d.push({id:crypto.randomUUID(),color,value:'🚫',type:'skip'});d.push({id:crypto.randomUUID(),color,value:'🔄',type:'reverse'});d.push({id:crypto.randomUUID(),color,value:'+2',type:'draw2'});}}for(let i=0;i<4;i++){d.push({id:crypto.randomUUID(),color:'black',value:'🌈',type:'wild'});d.push({id:crypto.randomUUID(),color:'black',value:'+4',type:'draw4'});}return shuffle(d);}
 function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
-function isPlayable(c,game){return c.color==='black'||c.color===game.color||c.value===game.discard.value;}
+function isPlayable(c,game){if(!c||!game?.discard)return false;if((game.pendingDraw||0)>0){if(!game.stackDraw)return false;if(c.type!=='draw2'&&c.type!=='draw4')return false;}return c.color==='black'||c.color===game.color||c.value===game.discard.value;}
 function showTurnNotice(text,isMine){const el=$('#turnStatus');if(!el)return;el.textContent=text;el.classList.toggle('bot',!isMine);el.classList.remove('show');void el.offsetWidth;el.classList.add('show');clearTimeout(window.__unoTurnTimer);window.__unoTurnTimer=setTimeout(()=>el.classList.remove('show'),2050);}
 function renderSoloGame(){const g=state.solo;if(!g)return;$('#roundText').textContent='1 / 1';showTurnNotice(g.turn==='player'?'SUA VEZ!':'VEZ DO BOT',g.turn==='player');$('#discardPile').className=`uno-card card-${g.color} big-card`;$('#discardPile').textContent=g.discard.value;$('#colorIndicator').textContent=SOLO_NAMES[g.color];$('#deckCount').textContent=g.deck.length;$('#opponents').innerHTML=`<div class="opponent-card"><div class="opponent-avatar">🤖</div><div><b>${escapeHtml(g.botName)}</b><small>${g.bot.length} cartas</small></div><div class="mini-hand">${Array.from({length:Math.min(g.bot.length,7)}).map(()=>'<span class="back-mini">UNO</span>').join('')}</div></div>`;$('#playerHand').innerHTML=g.player.map((c,i)=>`<button class="uno-card card-${c.color} hand-card" data-index="${i}"><i>${c.value}</i><span>${c.value}</span><em>${c.type==='number'?'NÚMERO':c.type.toUpperCase()}</em></button>`).join('');$$('#playerHand .hand-card').forEach(b=>b.onclick=()=>attemptSoloCard(Number(b.dataset.index)));}
 function attemptSoloCard(i){
@@ -313,7 +329,7 @@ function callUno(){if(state.solo){if(state.solo.player.length===1){state.solo.un
 function exitGame(){state.solo=null;state.pendingCard=null;state.pendingSoloCard=null;hide('#colorModal');navigate(state.currentRoom?'room':'lobby');}
 function toggleMute(){state.muted=!state.muted;SoundFX.enabled=!state.muted&&state.settings?.sfx!==false;$('#btnSound').textContent=state.muted?'🔇':'🔊';}
 
-function renderOnlineGame(game){if(!game)return;navigate('game');$('#arenaShell').className=`arena-shell online-arena map-${roomTheme(game.mapId)}`;$('#roundText').textContent='ONLINE';const mine=String(game.currentPlayerId)===String(state.user.id);showTurnNotice(mine?'SUA VEZ!':'VEZ DO OPONENTE',mine);$('#discardPile').className=`uno-card card-${game.currentColor} big-card`;$('#discardPile').textContent=game.top?.value||'?';$('#colorIndicator').textContent=SOLO_NAMES[game.currentColor]||game.currentColor;$('#deckCount').textContent=game.deckCount;$('#playerHand').innerHTML=(game.hand||[]).map((c,i)=>`<button class="uno-card card-${c.color} hand-card" data-index="${i}"><i>${c.value}</i><span>${c.value}</span><em>${c.type==='number'?'NÚMERO':c.type.toUpperCase()}</em></button>`).join('');$$('#playerHand .hand-card').forEach((b,i)=>b.onclick=()=>{const c=game.hand[i];if(!mine)return toast('Aguarde sua vez.');if(!isPlayable(c,{color:game.currentColor,discard:game.top}))return toast('Essa carta não pode ser jogada.','error');state.pendingCard={...c,cardId:c.id};
+function renderOnlineGame(game){if(!game)return;navigate('game');$('#arenaShell').className=`arena-shell online-arena map-${roomTheme(game.mapId)}`;$('#roundText').textContent='ONLINE';const mine=String(game.currentPlayerId)===String(state.user.id);showTurnNotice(mine?'SUA VEZ!':'VEZ DO OPONENTE',mine);$('#discardPile').className=`uno-card card-${game.currentColor} big-card`;$('#discardPile').textContent=game.top?.value||'?';$('#colorIndicator').textContent=SOLO_NAMES[game.currentColor]||game.currentColor;$('#deckCount').textContent=game.deckCount;$('#playerHand').innerHTML=(game.hand||[]).map((c,i)=>`<button class="uno-card card-${c.color} hand-card" data-index="${i}"><i>${c.value}</i><span>${c.value}</span><em>${c.type==='number'?'NÚMERO':c.type.toUpperCase()}</em></button>`).join('');$$('#playerHand .hand-card').forEach((b,i)=>b.onclick=()=>{const c=game.hand[i];if(!mine)return toast('Aguarde sua vez.');if(!isPlayable(c,{color:game.currentColor,discard:game.top,pendingDraw:game.pendingDraw,stackDraw:state.currentRoom?.options?.stackDraw===true}))return toast('Essa carta não pode ser jogada agora.','error');state.pendingCard={...c,cardId:c.id};
 if(c.color==='black'||c.type==='wild'||c.type==='draw4'){show('#colorModal');}
 else{state.socket.emit('game:play',{cardId:c.id});state.pendingCard=null;}});$('#opponents').innerHTML=game.players.filter(p=>String(p.userId)!==String(state.user.id)).map(p=>`<div class="opponent-card ${String(p.userId)===String(game.currentPlayerId)?'active':''}"><div class="opponent-avatar">${p.isBot?'🤖':'🙂'}</div><div><b>${escapeHtml(p.username)}</b><small>${p.cardCount} cartas</small></div><div class="mini-hand">${Array.from({length:Math.min(p.cardCount,7)}).map(()=>'<span class="back-mini">UNO</span>').join('')}</div></div>`).join('');renderCharacter('#gameAvatar',state.profile.avatar);$('#gamePlayerName').textContent=state.user.username;$('#gamePlayerTitle').textContent=itemName(state.profile.avatar.title).toUpperCase();}
 function chooseColor(color){
@@ -328,6 +344,7 @@ function chooseColor(color){
     state.socket.emit('game:play',{cardId:state.pendingCard.cardId||state.pendingCard.id,chosenColor:color});
     state.pendingCard=null;
   }
+}
 
 function sendChat(body,channel='world'){const text=String(body||'').trim();if(!text)return;state.socket?.emit('chat:send',{channel,body:text,roomCode:state.currentRoom?.code,receiverId:state.selectedPrivateUser});}
 function switchChat(ch){state.currentChat=ch;$$('.chat-tab').forEach(b=>b.classList.toggle('active',b.dataset.chat===ch));$('#gameChatMessages').innerHTML='';$('#gameChatInput').placeholder=ch==='private'?'Mensagem privada...':'Mensagem...';}
@@ -371,4 +388,3 @@ function setupShopTabs(){/* reservado */}
 // O cliente nunca recebe a resposta correta do desafio.
 
 window.addEventListener('DOMContentLoaded',init);
-}
