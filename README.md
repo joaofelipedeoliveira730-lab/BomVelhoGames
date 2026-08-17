@@ -6,7 +6,7 @@ Versão 3.2.0 — jogo UNO multiplayer com modo solo, bots, salas online, rankin
 - Runtime: Node
 - Build Command: `npm install`
 - Start Command: `node server.js`
-- Variáveis obrigatórias: `DATABASE_URL`, `JWT_SECRET`, `CEO_INITIAL_PASSWORD`
+- Variáveis obrigatórias: `DATABASE_URL`, `JWT_SECRET`
 
 ## Banco
 O servidor aplica `schema.sql` e `seed.sql` automaticamente quando `DATABASE_URL` está configurada. Também existe `npm run migrate` para aplicação manual.
@@ -37,3 +37,25 @@ O servidor possui fallback para `database.json` quando `DATABASE_URL` não está
 - Verificação estática de sessão, URL, cache, reconexão, timeout e exposição de arquivos: PASS
 
 > O ambiente de testes desta entrega não conseguiu concluir `npm install` por timeout de rede, então a execução real do processo Node + PostgreSQL/Render ainda deve ser validada no Render após o deploy.
+
+
+## Banco de dados novo
+
+Esta versão não cria mais a conta `CeoVelho` automaticamente e não carrega contas de teste. O banco começa sem jogadores: o primeiro usuário deve tocar em **CADASTRAR** na tela de login.
+
+Para zerar completamente um PostgreSQL existente uma única vez, execute:
+
+```bash
+
+```
+
+O comando apaga todas as tabelas do schema `public`, recria a estrutura e reaplica somente o catálogo estático do jogo. **Ele é destrutivo e não deve ser executado novamente depois que jogadores começarem a usar o banco.**
+
+Depois do reset, inicie normalmente com `npm start`. O servidor não executa o reset automaticamente.
+
+### Fluxo de autenticação
+
+- `ENTRAR NA CONTA` continua sendo o botão principal.
+- `CADASTRAR` fica diretamente abaixo do botão Entrar.
+- O cadastro abre somente quando o jogador toca em `CADASTRAR`.
+- Usuário e senha são enviados por `POST` e a sessão fica em cookie `HttpOnly`; credenciais não são colocadas na URL.

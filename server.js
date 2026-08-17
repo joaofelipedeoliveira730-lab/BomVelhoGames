@@ -70,171 +70,68 @@ function saveLocalDb(db) { fs.writeFileSync(localDbPath, JSON.stringify(db, null
 
 async function initDatabase() {
   if (!process.env.DATABASE_URL) {
-    console.warn('⚠️ DATABASE_URL ausente. O servidor usará armazenamento local apenas para desenvolvimento.');
-    usePostgres = false;
-    localDb();
-    return;
+    if (isProduction) throw new Error('DATABASE_URL é obrigatório em produção.');
+    console.warn('⚠️ DATABASE_URL ausente. Modo local somente para desenvolvimento.');
+    usePostgres=false; localDb(); return;
   }
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-    max: 8,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 10000,
-    statement_timeout: 15000,
-    query_timeout: 20000
-  });
-  pool.on('error', err => console.error('❌ PostgreSQL pool:', err.message));
-  try {
-    await pool.query('SELECT 1');
-    const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-    await pool.query(schema);
-    const seedPath = path.join(__dirname, 'seed.sql');
-    if (fs.existsSync(seedPath)) {
-      const seed = fs.readFileSync(seedPath, 'utf8');
-      if (seed.trim()) await pool.query(seed);
-    }
-    await repairLegacySchema();
-    usePostgres = true;
-    await ensureCeo();
-    console.log('✅ PostgreSQL conectado e schema aplicado.');
-  } catch (err) {
-    console.error('❌ PostgreSQL/schema indisponível:', err.message);
-    try { await pool.end(); } catch {}
-    pool = null;
-    usePostgres = false;
-    if (isProduction || process.env.DATABASE_URL) throw err;
-    localDb();
-  }
+  pool = new Pool({ connectionString:process.env.DATABASE_URL, ssl:{rejectUnauthorized:false}, max:8, idleTimeoutMillis:30000, connectionTimeoutMillis:10000, keepAlive:true, keepAliveInitialDelayMillis:10000, statement_timeout:15000, query_timeout:20000 });
+  pool.on('error',err=>console.error('❌ PostgreSQL pool:',err.message));
+  await pool.query('SELECT 1');
+  const schema=fs.readFileSync(path.join(__dirname,'schema.sql'),'utf8');
+  await pool.query(schema);
+  const seedPath=path.join(__dirname,'seed.sql');
+  if(fs.existsSync(seedPath)){const seed=fs.readFileSync(seedPath,'utf8');if(seed.trim())await pool.query(seed);}
+  usePostgres=true;
+  await ensureCeo();
+  await ensureSeason();
+  console.log('✅ PostgreSQL conectado, schema verificado e temporada inicial pronta.');
+}
+
+async function ensureCeo(){
+  if(!pool)return;
+  const existing=await pool.query("SELECT id FROM users WHERE LOWER(username)=LOWER('CeoVelho') LIMIT 1");
+  if(existing.rows.length){await pool.query("UPDATE users SET role='CEO' WHERE id=$1",[existing.rows[0].id]);return;}
+  const password=String(process.env.CEO_INITIAL_PASSWORD||'');
+  if(password.length<12) throw new Error('CEO_INITIAL_PASSWORD deve ter pelo menos 12 caracteres para criar o CeoVelho.');
+  const hash=await bcrypt.hash(password,12);
+  await pool.query("INSERT INTO users(username,password_hash,role,coins,xp,level) VALUES('CeoVelho',$1,'CEO',999999999,9999999,100)",[hash]);
+  console.log('👑 Conta exclusiva CeoVelho criada.');
+}
+
+async function ensureSeason(){
+  if(!pool)return;
+  const r=await pool.query("SELECT id FROM seasons WHERE status='active' LIMIT 1");
+  if(r.rows.length)return;
+  const max=await pool.query('SELECT COALESCE(MAX(season_number),0)+1 AS n FROM seasons');
+  const days=Math.min(365,Math.max(1,Number(process.env.DEFAULT_SEASON_DAYS)||30));
+  await pool.query("INSERT INTO seasons(season_number,starts_at,ends_at,status) VALUES($1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+($2 || ' days')::interval,'active')",[Number(max.rows[0].n),days]);
+}
+
+async function getSeason(){
+  if(!usePostgres)return {seasonNumber:1,status:'active',startsAt:new Date().toISOString(),endsAt:new Date(Date.now()+30*86400000).toISOString(),canNext:false};
+  let r=await pool.query("SELECT * FROM seasons WHERE status='active' ORDER BY season_number DESC LIMIT 1");
+  if(!r.rows[0]){await ensureSeason();r=await pool.query("SELECT * FROM seasons WHERE status='active' ORDER BY season_number DESC LIMIT 1");}
+  const row=r.rows[0]; const ended=new Date(row.ends_at).getTime()<=Date.now();
+  return {seasonNumber:Number(row.season_number),status:ended?'ended':'active',startsAt:row.starts_at,endsAt:row.ends_at,canNext:ended};
+}
+
+async function nextSeason(ceoId){
+  if(!usePostgres)throw new Error('Temporadas exigem PostgreSQL.');
+  const client=await pool.connect();
+  try{await client.query('BEGIN');
+    const active=(await client.query("SELECT * FROM seasons WHERE status='active' ORDER BY season_number DESC LIMIT 1 FOR UPDATE")).rows[0];
+    if(!active)throw new Error('Nenhuma temporada ativa.');
+    if(new Date(active.ends_at).getTime()>Date.now())throw new Error('A temporada ainda não terminou.');
+    await client.query("UPDATE seasons SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=$1",[active.id]);
+    await client.query("UPDATE users SET wins=0,losses=0,games_played=0 WHERE role<>'CEO'");
+    const n=Number(active.season_number)+1;
+    const days=Math.max(1,Number(process.env.DEFAULT_SEASON_DAYS)||30);
+    const r=await client.query("INSERT INTO seasons(season_number,starts_at,ends_at,status,created_by) VALUES($1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP+($2 || ' days')::interval,'active',$3) RETURNING *",[n,days,ceoId]);
+    await client.query('COMMIT'); return {seasonNumber:n,startsAt:r.rows[0].starts_at,endsAt:r.rows[0].ends_at,status:'active'};
+  }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
 }
 
 
-async function repairLegacySchema() {
-  if (!pool) return;
-
-  // Compatibilidade com bancos antigos que possuíam uma tabela "profiles"
-  // independente da tabela "users". O servidor atual usa users.id como
-  // identidade principal e profiles.user_id como ligação.
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS app_bootstrap (
-      key VARCHAR(120) PRIMARY KEY,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    ALTER TABLE profiles
-      ADD COLUMN IF NOT EXISTS user_id INTEGER,
-      ADD COLUMN IF NOT EXISTS avatar JSONB NOT NULL DEFAULT '{}'::jsonb,
-      ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'::jsonb,
-      ADD COLUMN IF NOT EXISTS bio VARCHAR(180) NOT NULL DEFAULT '',
-      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-
-    ALTER TABLE user_inventory
-      ADD COLUMN IF NOT EXISTS quantity INTEGER NOT NULL DEFAULT 1,
-      ADD COLUMN IF NOT EXISTS acquired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-
-    ALTER TABLE items
-      ADD COLUMN IF NOT EXISTS name VARCHAR(120) NOT NULL DEFAULT 'Item',
-      ADD COLUMN IF NOT EXISTS category VARCHAR(40) NOT NULL DEFAULT 'cosmetic',
-      ADD COLUMN IF NOT EXISTS description VARCHAR(255) NOT NULL DEFAULT '',
-      ADD COLUMN IF NOT EXISTS price BIGINT NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS xp_required BIGINT NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS rarity VARCHAR(20) NOT NULL DEFAULT 'common',
-      ADD COLUMN IF NOT EXISTS asset JSONB NOT NULL DEFAULT '{}'::jsonb,
-      ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE,
-      ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
-
-    ALTER TABLE player_market
-      ADD COLUMN IF NOT EXISTS sold_at TIMESTAMP;
-
-    UPDATE profiles p
-       SET user_id = u.id
-      FROM users u
-     WHERE p.user_id IS NULL
-       AND lower(p.username) = lower(u.username);
-
-    UPDATE profiles p
-       SET avatar = COALESCE(p.avatar, '{}'::jsonb),
-           settings = COALESCE(p.settings, '{}'::jsonb),
-           bio = COALESCE(p.bio, ''),
-           updated_at = COALESCE(p.updated_at, CURRENT_TIMESTAMP)
-     WHERE p.user_id IS NOT NULL;
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_user_id_unique
-      ON profiles(user_id);
-
-    CREATE INDEX IF NOT EXISTS idx_profiles_username
-      ON profiles(username);
-
-    CREATE INDEX IF NOT EXISTS idx_inventory_user
-      ON user_inventory(user_id);
-  `);
-
-  // Perfis novos não dependem de uma linha pré-existente. O registro/login
-  // cria o perfil automaticamente.
-  console.log('🛠️ Compatibilidade do PostgreSQL verificada/corrigida.');
-}
-
-async function ensureCeo() {
-  if (!pool) return;
-  const password = String(process.env.CEO_INITIAL_PASSWORD || '').trim();
-  const resetMarker = 'ceo_account_reset_v1';
-
-  // O primeiro bootstrap, quando CEO_INITIAL_PASSWORD estiver definido no Render,
-  // limpa contas antigas uma única vez e deixa somente o CEO de teste solicitado.
-  const marker = await pool.query('SELECT key FROM app_bootstrap WHERE key=$1 LIMIT 1', [resetMarker]);
-  if (!marker.rows.length) {
-    if (!password) {
-      throw new Error('CEO_INITIAL_PASSWORD não definido. Configure no Render para concluir o bootstrap do CeoVelho.');
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query('DELETE FROM users WHERE LOWER(username) <> LOWER($1)', ['CeoVelho']);
-
-      const hash = await bcrypt.hash(password, 12);
-      const existing = await client.query("SELECT id FROM users WHERE LOWER(username)=LOWER('CeoVelho') LIMIT 1");
-      if (existing.rows.length) {
-        await client.query(
-          "UPDATE users SET username='CeoVelho', password_hash=$1, role='CEO', coins=999999999, xp=9999999, level=100 WHERE id=$2",
-          [hash, existing.rows[0].id]
-        );
-      } else {
-        await client.query(
-          "INSERT INTO users(username,password_hash,role,coins,xp,level) VALUES('CeoVelho',$1,'CEO',999999999,9999999,100)",
-          [hash]
-        );
-      }
-      await client.query('INSERT INTO app_bootstrap(key) VALUES($1)', [resetMarker]);
-      await client.query('COMMIT');
-      console.log('👑 Bootstrap concluído: somente CeoVelho foi mantido/criado.');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-    return;
-  }
-
-  // Em deploys seguintes não apaga contas nem altera dados do jogo.
-  const found = await pool.query("SELECT id, username, role FROM users WHERE LOWER(username)='ceovelho' LIMIT 1");
-  if (!found.rows.length) {
-    if (!password) throw new Error('CeoVelho não existe e CEO_INITIAL_PASSWORD não está definido.');
-    const hash = await bcrypt.hash(password, 12);
-    await pool.query("INSERT INTO users(username,password_hash,role,coins,xp,level) VALUES('CeoVelho',$1,'CEO',999999999,9999999,100)", [hash]);
-    console.log('👑 Conta CeoVelho recriada.');
-  } else {
-    if (password) {
-      const hash = await bcrypt.hash(password, 12);
-      await pool.query("UPDATE users SET username='CeoVelho',password_hash=$1,role='CEO' WHERE id=$2", [hash, found.rows[0].id]);
-    } else if (found.rows[0].role !== 'CEO') {
-      await pool.query("UPDATE users SET role='CEO' WHERE id=$1", [found.rows[0].id]);
-    }
-  }
-}
 function parseCookies(req) {
   const raw = req.headers.cookie || '';
   const out = {};
@@ -433,6 +330,7 @@ app.post('/api/game/solo-finish',auth,async(req,res)=>{
       const rr=await pool.query('UPDATE users SET level=$1 WHERE id=$2 RETURNING id,username,role,coins,xp,level,wins,losses,games_played',[lvl,req.user.id]);
       await pool.query('INSERT INTO matches(id,mode,difficulty,map_id,winner_user_id,ended_at,metadata) VALUES($1,$2,$3,$4,$5,CURRENT_TIMESTAMP,$6)',[matchId,'solo',difficulty,'local',win?req.user.id:null,JSON.stringify({source:'server',version:'3.1.0'})]);
       await pool.query('INSERT INTO match_players(match_id,user_id,username_snapshot,position,result,coins_earned,xp_earned) VALUES($1,$2,$3,$4,$5,$6,$7)',[matchId,req.user.id,req.user.username,1,win?'win':'loss',coins,xp]);
+      await pool.query(`INSERT INTO user_mode_stats(user_id,mode,games_played,wins,losses) VALUES($1,'solo',1,$2,$3) ON CONFLICT(user_id,mode) DO UPDATE SET games_played=user_mode_stats.games_played+1,wins=user_mode_stats.wins+$2,losses=user_mode_stats.losses+$3,updated_at=CURRENT_TIMESTAMP`,[req.user.id,win?1:0,win?0:1]);
       await pool.query('COMMIT');
       return res.json({success:true,user:publicUser(rr.rows[0]||u),matchId});
     }
@@ -455,6 +353,36 @@ app.post('/api/shop/market/list',auth,async(req,res)=>{if(!usePostgres)return re
 app.post('/api/shop/market/cancel',auth,async(req,res)=>{if(!usePostgres)return res.status(503).json({success:false,message:'Loja de jogadores exige PostgreSQL.'});const listingId=Number(req.body.listingId);const client=await pool.connect();try{await client.query('BEGIN');const l=(await client.query("SELECT * FROM player_market WHERE listing_id=$1 AND seller_id=$2 AND status='active' FOR UPDATE",[listingId,req.user.id])).rows[0];if(!l)throw new Error('Anúncio não encontrado.');await client.query("UPDATE player_market SET status='cancelled' WHERE listing_id=$1",[listingId]);await client.query('INSERT INTO user_inventory(user_id,item_id) VALUES($1,$2) ON CONFLICT(user_id,item_id) DO UPDATE SET quantity=user_inventory.quantity+1',[req.user.id,l.item_id]);await client.query('COMMIT');res.json({success:true,message:'Anúncio cancelado e item devolvido.'});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}});
 app.post('/api/shop/market/buy',auth,async(req,res)=>{if(!usePostgres)return res.status(503).json({success:false,message:'Loja de jogadores exige PostgreSQL.'});const listingId=Number(req.body.listingId);const client=await pool.connect();try{await client.query('BEGIN');const l=(await client.query("SELECT m.*,i.name,i.asset FROM player_market m JOIN items i ON i.id=m.item_id WHERE m.listing_id=$1 AND m.status='active' FOR UPDATE",[listingId])).rows[0];if(!l)throw new Error('Anúncio não encontrado.');if(l.seller_id===req.user.id)throw new Error('Você não pode comprar seu próprio anúncio.');const buyer=(await client.query('SELECT coins FROM users WHERE id=$1 FOR UPDATE',[req.user.id])).rows[0];if(Number(buyer.coins)<Number(l.price))throw new Error('Moedas insuficientes.');const seller=(await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[l.seller_id])).rows[0];if(!seller)throw new Error('Vendedor não encontrado.');await client.query('UPDATE users SET coins=coins-$1 WHERE id=$2',[l.price,req.user.id]);await client.query('UPDATE users SET coins=coins+$1 WHERE id=$2',[l.price,l.seller_id]);await client.query('DELETE FROM user_inventory WHERE user_id=$1 AND item_id=$2',[l.seller_id,l.item_id]);await client.query('INSERT INTO user_inventory(user_id,item_id) VALUES($1,$2) ON CONFLICT(user_id,item_id) DO UPDATE SET quantity=user_inventory.quantity+1',[req.user.id,l.item_id]);await client.query("UPDATE player_market SET status='sold',sold_at=CURRENT_TIMESTAMP WHERE listing_id=$1",[listingId]);await client.query('COMMIT');res.json({success:true,message:'Compra concluída!'});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}});
 
+app.get('/api/season',auth,async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json({success:true,season:await getSeason(),isCeo:req.user.role==='CEO'});});
+app.post('/api/season/schedule',auth,requireRole('CEO'),async(req,res)=>{
+  const days=Math.floor(Number(req.body.days));
+  if(!Number.isFinite(days)||days<1||days>365)return res.status(400).json({success:false,message:'A duração deve ser de 1 a 365 dias.'});
+  if(!usePostgres)return res.status(503).json({success:false,message:'Temporadas exigem PostgreSQL.'});
+  const client=await pool.connect(); try{await client.query('BEGIN'); const active=(await client.query("SELECT * FROM seasons WHERE status='active' ORDER BY season_number DESC LIMIT 1 FOR UPDATE")).rows[0]; if(!active)throw new Error('Temporada ativa não encontrada.'); if(new Date(active.ends_at).getTime()<=Date.now())throw new Error('A temporada já terminou. Clique em Próxima Temporada.'); const r=await client.query("UPDATE seasons SET ends_at=CURRENT_TIMESTAMP+($1 || ' days')::interval WHERE id=$2 RETURNING *",[days,active.id]); await client.query('COMMIT'); res.json({success:true,season:{seasonNumber:Number(r.rows[0].season_number),startsAt:r.rows[0].starts_at,endsAt:r.rows[0].ends_at,status:'active',canNext:false}}); }catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release()}
+});
+app.post('/api/season/next',auth,requireRole('CEO'),async(req,res)=>{try{const season=await nextSeason(req.user.id);io.emit('season:new',season);res.json({success:true,season});}catch(e){res.status(400).json({success:false,message:e.message});}});
+
+app.get('/api/history',auth,async(req,res)=>{
+  const limit=Math.min(50,Math.max(1,Number(req.query.limit)||20));
+  if(!usePostgres)return res.json({success:true,matches:[]});
+  const r=await pool.query(`
+    SELECT m.id,m.mode,m.map_id,m.room_code,m.started_at,m.ended_at,mp.result,mp.position,
+           (SELECT COUNT(*) FROM match_players x WHERE x.match_id=m.id) AS players
+    FROM match_players mp JOIN matches m ON m.id=mp.match_id
+    WHERE mp.user_id=$1
+    ORDER BY COALESCE(m.ended_at,m.started_at) DESC LIMIT $2`,[req.user.id,limit]);
+  const labels={solo:'SOLO',online:'ONLINE'};
+  res.json({success:true,matches:r.rows.map(x=>({id:x.id,mode:x.mode,modeLabel:labels[x.mode]||String(x.mode).toUpperCase(),mapId:x.map_id,roomCode:x.room_code,startedAt:x.started_at,endedAt:x.ended_at,result:x.result,position:x.position?Number(x.position):null,players:Number(x.players||0)}))});
+});
+app.get('/api/stats/me',auth,async(req,res)=>{
+  if(!usePostgres)return res.json({success:true,stats:{gamesPlayed:0,wins:0,winRate:0,solo:{gamesPlayed:0,wins:0},duo:{gamesPlayed:0,wins:0},trio:{gamesPlayed:0,wins:0},online:{gamesPlayed:0,wins:0}}});
+  const totals=(await pool.query(`SELECT games_played,wins,CASE WHEN games_played>0 THEN ROUND(wins::numeric/games_played::numeric*100,1) ELSE 0 END win_rate FROM users WHERE id=$1`,[req.user.id])).rows[0]||{};
+  const rows=(await pool.query(`SELECT mode,games_played,wins FROM user_mode_stats WHERE user_id=$1`,[req.user.id])).rows;
+  const out={gamesPlayed:Number(totals.games_played||0),wins:Number(totals.wins||0),winRate:Number(totals.win_rate||0),solo:{gamesPlayed:0,wins:0},duo:{gamesPlayed:0,wins:0},trio:{gamesPlayed:0,wins:0},online:{gamesPlayed:0,wins:0}};
+  for(const r of rows){const k=['solo','duo','trio'].includes(r.mode)?r.mode:'online';out[k].gamesPlayed+=Number(r.games_played||0);out[k].wins+=Number(r.wins||0);}
+  res.json({success:true,stats:out});
+});
+
 app.get('/api/rank',async(req,res)=>{
   if(!usePostgres)return res.json({success:true,players:[]});
   const r=await pool.query(`
@@ -465,7 +393,8 @@ app.get('/api/rank',async(req,res)=>{
     ORDER BY wins DESC,games_played DESC,win_rate DESC,username ASC
     LIMIT 100
   `);
-  res.json({success:true,players:r.rows.map(p=>({
+  const season=await getSeason();
+  res.json({success:true,season,players:r.rows.map(p=>({
     username:p.username,level:Number(p.level||1),wins:Number(p.wins||0),
     gamesPlayed:Number(p.games_played||0),winRate:Number(p.win_rate||0)
   }))});
@@ -518,13 +447,14 @@ function botTurn(room){if(!room.started||room.game.winner||globalState.paused)re
 function scoreCard(c){return c.type==='draw4'?100:c.type==='draw2'?80:c.type==='wild'?70:c.type==='skip'?40:c.type==='reverse'?35:10;}
 function chooseBotColor(hand){const counts={red:0,yellow:0,green:0,blue:0};hand.forEach(c=>{if(counts[c.color]!=null)counts[c.color]++;});return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];}
 async function checkRoomWinner(room,player){if(player.hand.length!==0)return;room.game.winner=player.userId;room.started=false;room.locked=false;const realPlayers=room.players.filter(p=>!p.isBot);for(const p of realPlayers){const win=String(p.userId)===String(player.userId);await finishMatchPlayer(p,room,win);}emitGame(room);emitRoom(room);io.to(`room:${room.code}`).emit('game:winner',{username:player.username,userId:player.userId});}
-async function finishMatchPlayer(p,room,win){if(p.isBot)return;const coins=win?150:25;const xp=win?250:60;try{
+async function finishMatchPlayer(p,room,win){if(p.isBot)return;const coins=win?150:25;const xp=win?250:60;const modeStat=Number(room?.options?.maxPlayers||0)===2?'duo':Number(room?.options?.maxPlayers||0)===3?'trio':'online';try{
   if(usePostgres){
     await pool.query('BEGIN');
     const before=await pool.query('SELECT xp FROM users WHERE id=$1 FOR UPDATE',[p.userId]);
     const newXp=Number(before.rows[0]?.xp||0)+xp;
     await pool.query(`UPDATE users SET coins=coins+$1,xp=xp+$2,level=LEAST(100,$3),wins=wins+$4,losses=losses+$5,games_played=games_played+1 WHERE id=$6`,[coins,xp,levelForXp(newXp),win?1:0,win?0:1,p.userId]);
     await pool.query('UPDATE match_players SET result=$1,coins_earned=$2,xp_earned=$3 WHERE match_id=$4 AND user_id=$5',[win?'win':'loss',coins,xp,room.game.matchId,p.userId]);
+    await pool.query(`INSERT INTO user_mode_stats(user_id,mode,games_played,wins,losses) VALUES($1,$2,1,$3,$4) ON CONFLICT(user_id,mode) DO UPDATE SET games_played=user_mode_stats.games_played+1,wins=user_mode_stats.wins+$3,losses=user_mode_stats.losses+$4,updated_at=CURRENT_TIMESTAMP`,[p.userId,modeStat,win?1:0,win?0:1]);
     if(win)await pool.query('UPDATE matches SET winner_user_id=$1,ended_at=CURRENT_TIMESTAMP WHERE id=$2',[p.userId,room.game.matchId]);
     else await pool.query('UPDATE matches SET ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP) WHERE id=$1',[room.game.matchId]);
     await pool.query('COMMIT');
@@ -566,13 +496,13 @@ io.on('connection',socket=>{
   socket.on('room:start',async()=>{for(const room of rooms.values())if(room.ownerId===me.id&&room.players.some(p=>p.userId===me.id)){if(room.players.length<2&&!room.options.allowBots)return socket.emit('toast',{type:'error',message:'Adicione outro jogador ou permita bots.'});if(globalState.paused)return socket.emit('toast',{type:'error',message:globalState.message});if(room.options.allowBots){while(room.players.length<room.options.maxPlayers&&room.players.length<room.options.botFill)room.players.push(makeBotPlayer(room.players.length));}if(room.players.length<2)return socket.emit('toast',{type:'error',message:'Não foi possível preencher a sala.'});await startRoomGame(room);emitRoom(room);return;}});
   socket.on('game:play',async({cardId,chosenColor}={})=>{const room=findPlayerRoom(me.id);if(!room)return socket.emit('toast',{type:'error',message:'Você não está em uma sala.'});if(!turnAllowed(room,me.id))return socket.emit('toast',{type:'error',message:'Não é sua vez.'});const p=room.players.find(x=>x.userId===me.id);const index=p.hand.findIndex(c=>c.id===cardId||c._clientId===cardId);if(index<0)return socket.emit('toast',{type:'error',message:'Carta inválida.'});const card=p.hand[index];if(!playable(card,room.game.discard.at(-1),room.game.currentColor))return socket.emit('toast',{type:'error',message:'Carta não pode ser jogada.'});if(!canStackDraw(card,room))return socket.emit('toast',{type:'error',message:room.options.stackDraw?'Você só pode empilhar +2/+4 agora.':'Você precisa comprar antes de jogar.'});p.hand.splice(index,1);applyCard(room,p,card,chosenColor);await checkRoomWinner(room,p);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
   socket.on('game:draw',()=>{const room=findPlayerRoom(me.id);if(!room||!turnAllowed(room,me.id))return;const p=room.players.find(x=>x.userId===me.id);drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.lastAction=Date.now();room.game.currentIndex=nextIndex(room,1);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
-  socket.on('chat:send',async({channel,body,roomCode,receiverId}={})=>{if(!rateLimit(chatRate,me.id,10000,12))return socket.emit('toast',{type:'error',message:'Você está enviando mensagens rápido demais.'});const text=cleanText(body,500);if(!text)return;const aiModeration=await geminiModerate(text);if(!aiModeration.allowed){if(usePostgres)await pool.query('INSERT INTO reports(reporter_id,target_id,reason,status) VALUES($1,$2,$3,$4)',[me.id,me.id,'Gemini bloqueou mensagem: '+cleanText(aiModeration.reason,220),'ai-block']);return socket.emit('toast',{type:'error',message:'Mensagem bloqueada pela moderação.'});}const mod=await activeModeration(me.id);if(mod?.action==='mute')return socket.emit('toast',{type:'error',message:'Você está silenciado.'});if(text.startsWith('/')&&me.role==='CEO'){const result=await executeAdminCommand(me,text);socket.emit('admin:result',result);return;}const ch=['world','room','private'].includes(channel)?channel:'world';let room=findPlayerRoom(me.id);if(ch==='room'&&(!room||room.code!==String(roomCode||room?.code).toUpperCase()))return;let targetSocket=null;if(ch==='private'){targetSocket=[...socketUsers.entries()].find(([,u])=>Number(u.userId)===Number(receiverId))?.[0];if(!targetSocket)return socket.emit('toast',{type:'error',message:'Jogador offline.'});}const msg={channel:ch,roomCode:room?.code||null,senderId:me.id,senderName:me.username,receiverId:receiverId||null,body:text,createdAt:new Date().toISOString()};if(usePostgres)await pool.query('INSERT INTO chat_messages(channel,room_code,sender_id,receiver_id,sender_name,body) VALUES($1,$2,$3,$4,$5,$6)',[ch,msg.roomCode,me.id,receiverId||null,me.username,text]);if(ch==='world')io.emit('chat:message',msg);else if(ch==='room')io.to(`room:${room.code}`).emit('chat:message',msg);else{socket.emit('chat:message',msg);if(targetSocket)io.to(targetSocket).emit('chat:message',msg);}});
+  socket.on('chat:send',async({channel,body,roomCode,receiverId}={})=>{if(!rateLimit(chatRate,me.id,10000,12))return socket.emit('toast',{type:'error',message:'Você está enviando mensagens rápido demais.'});const text=cleanText(body,500);if(!text)return;const aiModeration=await geminiModerate(text);if(!aiModeration.allowed){if(usePostgres)await pool.query('INSERT INTO reports(reporter_id,target_id,reason,status) VALUES($1,$2,$3,$4)',[me.id,me.id,'Gemini bloqueou mensagem: '+cleanText(aiModeration.reason,220),'ai-block']);return socket.emit('toast',{type:'error',message:'Mensagem bloqueada pela moderação.'});}const mod=await activeModeration(me.id);if(mod?.action==='mute')return socket.emit('toast',{type:'error',message:'Você está silenciado.'});if(text.startsWith('/')&&me.role==='CEO'){const result=await executeAdminCommand(me,text);socket.emit('admin:result',result);return;}const ch=['world','room','private'].includes(channel)?channel:'world';let room=findPlayerRoom(me.id);if(ch==='room'&&(!room||room.code!==String(roomCode||room?.code).toUpperCase()))return;let targetSocket=null;if(ch==='private'){targetSocket=[...socketUsers.entries()].find(([,u])=>Number(u.userId)===Number(receiverId))?.[0];if(!targetSocket)return socket.emit('toast',{type:'error',message:'Jogador offline.'});}if(ch==='room' && room?.options?.chat===false)return socket.emit('toast',{type:'error',message:'O chat desta sala está desativado.'});const msg={channel:ch,roomCode:room?.code||null,senderId:me.id,senderName:me.username,receiverId:receiverId||null,body:text,createdAt:new Date().toISOString()};if(usePostgres)await pool.query('INSERT INTO chat_messages(channel,room_code,sender_id,receiver_id,sender_name,body) VALUES($1,$2,$3,$4,$5,$6)',[ch,msg.roomCode,me.id,receiverId||null,me.username,text]);if(ch==='world')io.emit('chat:message',msg);else if(ch==='room')io.to(`room:${room.code}`).emit('chat:message',msg);else{socket.emit('chat:message',msg);if(targetSocket)io.to(targetSocket).emit('chat:message',msg);}});
   socket.on('disconnect',()=>{for(const room of rooms.values()){const p=room.players.find(x=>String(x.userId)===String(me.id));if(p){p.connected=false;emitRoom(room);}}socketUsers.delete(socket.id);});
 });
 function findPlayerRoom(userId){for(const room of rooms.values())if(room.players.some(p=>String(p.userId)===String(userId)))return room;return null;}
 
 async function executeAdminCommand(me,text){const parts=text.trim().split(/\s+/);const cmd=parts.shift().toLowerCase();const args=parts.join(' ');if(me.role!=='CEO')return {ok:false,message:'Comando restrito.'};try{
-  if(cmd==='/help')return {ok:true,message:['/help','/paralisaruno [mensagem]','/desparalisaruno','/anuncio [mensagem]','/kick [usuario]','/ban [usuario] [minutos] [motivo]','/unban [usuario]','/mute [usuario] [minutos]','/unmute [usuario]','/darcoins [usuario] [quantidade]','/darxp [usuario] [quantidade]','/removecoins [usuario] [quantidade]','/criar staff [usuario]','/bloqueiochat','/desbloqueiochat','/status','/salas','/fecharsala [codigo]','/evento [mensagem]'].join('\n')};
+  if(cmd==='/help')return {ok:true,message:['/help','/paralisaruno [mensagem]','/desparalisaruno','/anuncio [mensagem]','/kick [usuario]','/ban [usuario] [minutos] [motivo]','/unban [usuario]','/mute [usuario] [minutos]','/unmute [usuario]','/darcoins [usuario] [quantidade]','/darxp [usuario] [quantidade]','/removecoins [usuario] [quantidade]','/criar staff [usuario]','/bloqueiochat','/desbloqueiochat','/status','/salas','/fecharsala [codigo]','/evento [mensagem]','/temporada [dias]'].join('\n')};
   if(cmd==='/paralisaruno'){globalState={paused:true,message:cleanText(args||'UNO50 paralisado pelo CEO.',500)};if(usePostgres)await pool.query('UPDATE global_game_state SET paused=true,message=$1,updated_by=$2,updated_at=CURRENT_TIMESTAMP WHERE id=1',[globalState.message,me.id]);io.emit('global:pause',globalState);await logAdmin(me.id,cmd,args);return {ok:true,message:'Jogo paralisado.'};}
   if(cmd==='/desparalisaruno'){globalState={paused:false,message:''};if(usePostgres)await pool.query('UPDATE global_game_state SET paused=false,message=\'\',updated_by=$1,updated_at=CURRENT_TIMESTAMP WHERE id=1',[me.id]);io.emit('global:resume');await logAdmin(me.id,cmd,args);return {ok:true,message:'Jogo liberado.'};}
   if(cmd==='/anuncio'||cmd==='/evento'){const m=cleanText(args,500);if(!m)return {ok:false,message:'Informe uma mensagem.'};io.emit('admin:announcement',{message:m,by:me.username});await logAdmin(me.id,cmd,args);return {ok:true,message:'Mensagem enviada.'};}

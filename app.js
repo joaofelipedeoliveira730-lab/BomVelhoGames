@@ -22,9 +22,9 @@ const refs = {
   top: ['shirt_basic','shirt_red','shirt_neon','shirt_gold','shirt_space'],
   bottom: ['pants_basic','pants_black','pants_neon'],
   shoes: ['shoes_basic','shoes_red','shoes_gold'],
-  accessory: ['glasses_basic','glasses_cyan','glasses_gold','hat_cap','hat_cowboy','hat_crown','mask_math','backpack_blue','backpack_space'],
+  accessory: ['glasses_basic','glasses_cyan','glasses_gold','hat_cap','hat_cowboy','hat_crown','backpack_blue','backpack_space','parrot_shoulder','pirate_compass'],
   effect: ['aura_blue','aura_gold','aura_rainbow'],
-  emote: ['emote_wave','emote_math','emote_fire'],
+  emote: ['emote_wave','emote_fire','emote_dance','emote_cheer'],
   title: ['title_beginner','title_calculator','title_master','title_ceo']
 };
 
@@ -50,6 +50,7 @@ const state = {
   muted:false,
   roomToJoin:null,
   shopMode:'official',
+  shopCategory:'all',
   inventoryMode:'items',
   selectedPrivateUser:null
 };
@@ -81,18 +82,18 @@ function hide(id){$(id)?.classList.add('hidden')}
 function setMessage(id,msg,type='info'){const el=$(id);if(!el)return;el.textContent=msg;el.className=`form-message ${type}`;}
 function switchAuthMode(mode){
   const loginForm=$('#formLogin'), registerForm=$('#formRegister');
-  const loginBtn=$('#btnShowLogin'), registerBtn=$('#btnShowRegister');
+  const registerBtn=$('#btnShowRegister');
   const isRegister=mode==='register';
   if(!loginForm||!registerForm)return;
-  loginForm.style.display=isRegister?'none':'';
   registerForm.style.display=isRegister?'':'none';
-  loginForm.setAttribute('aria-hidden',isRegister?'true':'false');
   registerForm.setAttribute('aria-hidden',isRegister?'false':'true');
-  loginBtn?.classList.toggle('active',!isRegister);
+  registerBtn?.setAttribute('aria-expanded',String(isRegister));
   registerBtn?.classList.toggle('active',isRegister);
-  loginBtn?.setAttribute('aria-selected',String(!isRegister));
-  registerBtn?.setAttribute('aria-selected',String(isRegister));
-  if(isRegister){$('#regUsername')?.focus();}else{$('#loginUsername')?.focus();}
+  if(isRegister){
+    $('#regUsername')?.focus();
+  }else{
+    $('#loginUsername')?.focus();
+  }
 }
 function authHeaders(extra={}){return {...(extra||{})};}
 function postJSON(url,body,opts={}){return fetch(API+url,{method:opts.method||'POST',headers:authHeaders({'Content-Type':'application/json',...(opts.headers||{})}),body:body===undefined?undefined:JSON.stringify(body),credentials:'include'}).then(async r=>{let d={};try{d=await r.json()}catch{};if(!r.ok)throw Object.assign(new Error(d.message||`Erro ${r.status} de comunicação com o servidor.`),{data:d,status:r.status});return d;});}
@@ -175,15 +176,13 @@ function bindStaticEvents(){
   };
   $('#formLogin').onsubmit=login;
   $('#formRegister').onsubmit=register;
-  $('#btnShowLogin').onclick=()=>switchAuthMode('login');
-  $('#btnShowRegister').onclick=()=>switchAuthMode('register');
   $('#brandHome').onclick=()=>navigate('lobby');
   $('#btnPlay').onclick=()=>navigate('play');
   $('#btnShop').onclick=()=>openShop('official');
   $('#btnInventory').onclick=()=>openInventory('items');
-  $('#btnCustomize').onclick=()=>openCustomize();
+  $('#btnCustomize').onclick=()=>openCustomize();$('#btnCustomizeHero')?.addEventListener('click',openCustomize);
   $('#btnOpenProfile').onclick=()=>openInventory('items');
-  $('#btnOpenSettings').onclick=()=>{navigate('settings');refreshResourceStatus();};
+  $('#btnOpenSettings').onclick=()=>{navigate('settings');refreshResourceStatus();loadSeasonPanel();};
   $('#btnRankSmall').onclick=()=>openRank();
   $('#btnMapsPreview').onclick=()=>openShop('official');
   $('#btnSolo').onclick=()=>navigate('solo');
@@ -206,8 +205,8 @@ function bindStaticEvents(){
   $('#btnBackGame').onclick=exitGame;
   $('#btnSound').onclick=toggleMute;
   $('#btnGameSettings').onclick=()=>navigate('settings');
-  $('#btnLogout').onclick=logout; $('#btnDownloadResources')?.addEventListener('click',downloadAllResources);
-  $$('.shop-tab').forEach(b=>b.onclick=()=>openShop(b.dataset.shop));
+  $('#btnLogout').onclick=logout; $('#btnShowRegister').onclick=()=>switchAuthMode($('#formRegister')?.style.display==='none'?'register':'login'); $('#btnDownloadResources')?.addEventListener('click',downloadAllResources);
+  $$('.shop-tab').forEach(b=>b.onclick=()=>openShop(b.dataset.shop));$$('.shop-category').forEach(b=>b.onclick=()=>{state.shopCategory=b.dataset.shopCat||'all';$$('.shop-category').forEach(x=>x.classList.toggle('active',x===b));renderOfficialShop();});
   $$('.inventory-tab').forEach(b=>b.onclick=()=>openInventory(b.dataset.inv));
   $$('.color-picker button').forEach(b=>b.onclick=()=>chooseColor(b.dataset.color));
   $$('.swatch').forEach(b=>b.onclick=()=>{state.profile.avatar.skinColor=b.dataset.value;renderCharacter('#customCharacter',state.profile.avatar);});
@@ -239,7 +238,7 @@ async function enterApp(forceCustomize=false){
 }
 function defaultClientSettings(){return {music:true,musicVolume:.45,sfx:true,sfxVolume:.75,animations:true,chatWorld:true,chatRoom:true,chatPrivate:true,reducedMotion:false};}
 
-function updateUserUI(){const u=state.user;if(!u)return;$('#coinValue').textContent=formatNum(u.coins);$('#levelValue').textContent=u.level;$('#heroName').textContent=u.username;$('#winsValue').textContent=u.wins||0;$('#xpValue').textContent=formatNum(u.xp);$('#profileName').textContent=u.username;$('#profileLevel').textContent=u.level;$('#profileWins').textContent=u.wins||0;$('#profileGames').textContent=u.gamesPlayed||0;$('#accountInfo').innerHTML=`<b>${escapeHtml(u.username)}</b><br>Cargo: ${escapeHtml(u.role)}<br>🪙 ${formatNum(u.coins)} • ⭐ ${formatNum(u.xp)} XP`;const pct=Math.min(100,Math.max(0,((u.xp-(u.level>1?xpForLevelClient(u.level):0))/Math.max(1,xpForLevelClient(u.level+1)-(u.level>1?xpForLevelClient(u.level):0)))*100));$('#xpBar').style.width=pct+'%';const title=itemName(state.profile?.avatar?.title)||'INICIANTE';$('#profileTitle').textContent=title.toUpperCase();$('#customNamePreview').textContent=u.username;$('#customTitlePreview').textContent=title.toUpperCase();$('#avatarMiniFace').textContent='🙂';}
+function updateUserUI(){const u=state.user;if(!u)return;$('#coinValue').textContent=formatNum(u.coins);$('#levelValue').textContent=u.level;$('#heroName').textContent=u.username;$('#winsValue').textContent=u.wins||0;$('#xpValue').textContent=formatNum(u.xp);$('#profileName').textContent=u.username;$('#profileLevel').textContent=u.level;$('#profileWins').textContent=u.wins||0;$('#profileGames').textContent=u.gamesPlayed||0;$('#accountInfo').innerHTML=`<b>${escapeHtml(u.username)}</b><br>Cargo: ${escapeHtml(u.role)}<br>🪙 ${formatNum(u.coins)} • ⭐ ${formatNum(u.xp)} XP`;const pct=Math.min(100,Math.max(0,((u.xp-(u.level>1?xpForLevelClient(u.level):0))/Math.max(1,xpForLevelClient(u.level+1)-(u.level>1?xpForLevelClient(u.level):0)))*100));$('#xpBar').style.width=pct+'%';const title=itemName(state.profile?.avatar?.title)||'INICIANTE';$('#profileTitle').textContent=title.toUpperCase();$('#customNamePreview').textContent=u.username;$('#customTitlePreview').textContent=title.toUpperCase();$('#avatarMiniFace').textContent='🙂';$('#heroCharacterLabel')&&($('#heroCharacterLabel').textContent=u.username);$('#shopCoinValue')&&($('#shopCoinValue').textContent=formatNum(u.coins));renderCharacter('#heroCharacterLarge',state.profile?.avatar||{});}
 function formatNum(n){return new Intl.NumberFormat('pt-BR').format(Number(n||0));}
 function xpForLevelClient(level){return Math.floor(100*Math.pow(Math.max(0,level-1),1.45));}
 function itemName(id){return state.items.find(x=>x.id===id)?.name||({title_beginner:'Iniciante',title_calculator:'Calculista',title_master:'Mestre UNO50',title_ceo:'CEO'}[id]||id||'');}
@@ -294,7 +293,7 @@ function connectSocket(){
   state.socket.on('global:pause',m=>{show('#globalPauseBanner');$('#globalPauseBanner').textContent='⏸ '+m.message;});
   state.socket.on('global:resume',()=>hide('#globalPauseBanner'));
   state.socket.on('admin:announcement',m=>toast(`📢 ${m.by}: ${m.message}`,'success',6500));
-  state.socket.on('admin:result',m=>toast(m.message,m.ok?'success':'error',5000));
+  state.socket.on('admin:result',m=>toast(m.message,m.ok?'success':'error',5000)); state.socket.on('season:new',()=>{showSeasonNewAnimation();loadSeasonPanel();loadMiniRank();});
   state.socket.on('admin:kick',m=>{toast(m.message,'error');state.currentRoom=null;exitGame();navigate('lobby');});
 }
 
@@ -367,14 +366,17 @@ function sendChat(body,channel='world'){const text=String(body||'').trim();if(!t
 function switchChat(ch){state.currentChat=ch;$$('.chat-tab').forEach(b=>b.classList.toggle('active',b.dataset.chat===ch));$('#gameChatMessages').innerHTML='';$('#gameChatInput').placeholder=ch==='private'?'Mensagem privada...':'Mensagem...';}
 function renderChatMessage(m){if(m.channel==='room'&&state.currentRoom?.code!==m.roomCode)return;if(m.channel==='private'&&Number(m.senderId)!==Number(state.selectedPrivateUser)&&Number(m.receiverId)!==Number(state.user.id))return;const targets=[$('#roomChatMessages'),$('#gameChatMessages')];targets.forEach(box=>{if(!box)return;const item=document.createElement('div');item.className=`chat-line ${Number(m.senderId)===Number(state.user.id)?'mine':''}`;item.innerHTML=`<b>${escapeHtml(m.senderName)}</b><span>${escapeHtml(m.body)}</span>`;box.appendChild(item);box.scrollTop=box.scrollHeight;});}
 
-async function openShop(mode='official'){state.shopMode=mode;navigate('shop');$$('.shop-tab').forEach(b=>b.classList.toggle('active',b.dataset.shop===mode));try{if(mode==='market'){const d=await getJSON('/shop/market');renderMarket(d.listings||[]);}else{renderOfficialShop();}}catch(e){toast(e.message,'error');}}
-function renderOfficialShop(){const owned=new Set(state.inventory.map(x=>x.id));const list=state.items.filter(i=>i.is_active!==false&&!i.asset?.ceoOnly||i.asset?.ceoOnly&&state.user.role==='CEO');$('#shopGrid').innerHTML=list.map(item=>itemCard(item,owned.has(item.id))).join('');$$('.buy-item').forEach(b=>b.onclick=()=>buyItem(b.dataset.id));}
+async function openShop(mode='official'){state.shopMode=mode;navigate('shop');$$('.shop-tab').forEach(b=>b.classList.toggle('active',b.dataset.shop===mode));const catBar=$('#shopCategoryBar');if(catBar)catBar.classList.toggle('hidden',mode!=='official');try{if(mode==='market'){const d=await getJSON('/shop/market');renderMarket(d.listings||[]);}else{renderOfficialShop();}}catch(e){toast(e.message,'error');}}
+function shopCategoryOf(i){const id=String(i.id||'').toLowerCase(),cat=String(i.category||'').toLowerCase();if(cat==='clothing'||cat==='hair'||cat==='effect'||cat==='emote'||cat==='title')return cat;if(cat==='accessory'&&id.startsWith('hat_'))return 'hat';if(cat==='accessory')return 'accessory';return 'all';}
+function renderOfficialShop(){const owned=new Set(state.inventory.map(x=>x.id));let list=state.items.filter(i=>(i.is_active!==false)&&(!i.asset?.ceoOnly||state.user?.role==='CEO'));if(state.shopCategory!=='all')list=list.filter(i=>shopCategoryOf(i)===state.shopCategory);$('#shopGrid').innerHTML=list.length?list.map(item=>itemCard(item,owned.has(item.id))).join(''):'<div class="empty-state glass"><span>✨</span><b>Nenhum item nessa seção.</b><small>Volte para Tudo ou escolha outra categoria.</small></div>';$$('.buy-item').forEach(b=>b.onclick=()=>buyItem(b.dataset.id));}
 function itemCard(i,owned=false){const asset=i.asset||{};const visual=asset.theme||asset.style||'item';return `<article class="item-card glass rarity-${i.rarity}"><div class="item-visual ${visual}">${i.category==='map'?'🗺️':i.category==='deck'?'🎴':i.category==='hair'?'💇':i.category==='clothing'?'👕':i.category==='accessory'?'🕶️':i.category==='effect'?'✨':i.category==='emote'?'🎭':i.category==='title'?'🏷️':'🧩'}</div><div class="item-info"><span class="item-category">${escapeHtml(i.category)}</span><b>${escapeHtml(i.name)}</b><small>${escapeHtml(i.description||'')}</small><div class="item-buy"><span>${i.xp_required?`⭐ ${formatNum(i.xp_required)} XP`:'Disponível'}</span>${owned?'<button class="btn btn-owned" disabled>DESBLOQUEADO</button>':`<button class="btn btn-primary buy-item" data-id="${i.id}">${i.price?'🪙 '+formatNum(i.price):'GRÁTIS'}</button>`}</div></div></article>`;}
 async function buyItem(id){try{const d=await postJSON('/shop/buy',{itemId:id});toast(d.message,'success');state.inventory=(await getJSON('/inventory')).items||[];const me=await getJSON('/me');state.user=me.user;state.profile=me.profile;updateUserUI();renderOfficialShop();}catch(e){toast(e.message,'error');}}
 function renderMarket(list){$('#shopGrid').innerHTML=list.length?list.map(l=>`<article class="item-card glass rarity-${l.rarity}"><div class="item-visual generated">🧑‍🤝‍🧑</div><div class="item-info"><span class="item-category">VENDA DE JOGADOR</span><b>${escapeHtml(l.name)}</b><small>Vendedor: ${escapeHtml(l.seller)}</small><div class="item-buy"><span>🪙 ${formatNum(l.price)}</span><button class="btn btn-primary market-buy" data-id="${l.listing_id}">COMPRAR</button></div></div></article>`).join(''):'<div class="empty-state glass"><span>🛍️</span><b>Nenhum anúncio ativo.</b><small>Tenha itens duplicados e coloque-os à venda.</small></div>';$$('.market-buy').forEach(b=>b.onclick=()=>buyMarket(b.dataset.id));}
 async function buyMarket(id){try{const d=await postJSON('/shop/market/buy',{listingId:Number(id)});toast(d.message,'success');openShop('market');}catch(e){toast(e.message,'error');}}
 
-async function openInventory(mode='items'){state.inventoryMode=mode;navigate('inventory');state.inventory=(await getJSON('/inventory')).items||[];$$('.inventory-tab').forEach(b=>b.classList.toggle('active',b.dataset.inv===mode));renderCharacter('#profileCharacterLarge',state.profile.avatar);if(mode==='items')renderInventoryItems();else renderAchievements();}
+async function openInventory(mode='items'){state.inventoryMode=mode;navigate('inventory');state.inventory=(await getJSON('/inventory')).items||[];$$('.inventory-tab').forEach(b=>b.classList.toggle('active',b.dataset.inv===mode));renderCharacter('#profileCharacterLarge',state.profile.avatar);if(mode==='items')renderInventoryItems();else if(mode==='achievements')renderAchievements();else if(mode==='history')await renderMatchHistory();else if(mode==='stats')await renderPlayerStats();}
+async function renderMatchHistory(){const el=$('#inventoryContent');el.innerHTML='<div class="empty-state"><span>⏳</span><b>Carregando histórico...</b></div>';try{const d=await getJSON('/history?limit=50');const rows=d.matches||[];el.innerHTML=rows.length?`<div class="history-list">${rows.map(m=>`<article class="history-card glass"><div><b>${m.modeLabel}</b><small>${new Date(m.endedAt||m.startedAt).toLocaleString('pt-BR')}</small></div><div><span class="history-result ${m.result==='win'?'win':'loss'}">${m.result==='win'?'🏆 VITÓRIA':'DERROTA'}</span><small>${escapeHtml(m.mapName||m.mapId||'Mapa')}</small></div><div><small>${m.players} jogadores</small><small>${m.position?m.position+'º lugar':'—'}</small></div></article>`).join('')}</div>`:'<div class="empty-state glass"><span>📜</span><b>Nenhuma partida registrada ainda.</b><small>Suas vitórias e derrotas aparecerão aqui.</small></div>';}catch(e){el.innerHTML='<div class="empty-state glass"><span>⚠️</span><b>Não foi possível carregar o histórico.</b></div>';}}
+async function renderPlayerStats(){const el=$('#inventoryContent');el.innerHTML='<div class="empty-state"><span>⏳</span><b>Calculando estatísticas...</b></div>';try{const d=await getJSON('/stats/me');const s=d.stats||{};el.innerHTML=`<div class="stats-dashboard"><div class="stats-total glass"><div><b>${s.gamesPlayed||0}</b><small>Jogos jogados</small></div><div><b>${s.wins||0}</b><small>Vitórias</small></div><div><b>${Number(s.winRate||0).toFixed(1)}%</b><small>Aproveitamento</small></div></div><div class="mode-stats-grid"><article class="mode-stat glass"><span>🤖</span><b>${s.solo?.wins||0}</b><small>Vitórias Solo</small><em>${s.solo?.gamesPlayed||0} jogos</em></article><article class="mode-stat glass"><span>👥</span><b>${s.duo?.wins||0}</b><small>Vitórias Duo</small><em>${s.duo?.gamesPlayed||0} jogos</em></article><article class="mode-stat glass"><span>👥👥</span><b>${s.trio?.wins||0}</b><small>Vitórias Trio</small><em>${s.trio?.gamesPlayed||0} jogos</em></article><article class="mode-stat glass"><span>🌎</span><b>${s.online?.wins||0}</b><small>Outros Online</small><em>${s.online?.gamesPlayed||0} jogos</em></article></div></div>`;}catch(e){el.innerHTML='<div class="empty-state glass"><span>⚠️</span><b>Não foi possível carregar as estatísticas.</b></div>';}}
 function renderInventoryItems(){const by={};state.inventory.forEach(i=>(by[i.category]??=[]).push(i));$('#inventoryContent').innerHTML=Object.keys(by).length?Object.entries(by).map(([cat,arr])=>`<div class="inventory-section"><h3>${cat.toUpperCase()}</h3><div class="inventory-grid">${arr.map(i=>`<div class="owned-item"><div class="owned-icon">${i.category==='hair'?'💇':i.category==='clothing'?'👕':i.category==='accessory'?'🕶️':i.category==='map'?'🗺️':i.category==='deck'?'🎴':'✨'}</div><b>${escapeHtml(i.name)}</b><small>x${i.quantity||1}</small><button class="mini-sell" data-sell="${i.id}">VENDER</button></div>`).join('')}</div></div>`).join(''):'<div class="empty-state"><span>🎒</span><b>Seu inventário está esperando sua primeira conquista.</b></div>';}
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-sell]');if(!b)return;const price=prompt('Preço em moedas para este item (mínimo 10):','500');if(price===null)return;try{await postJSON('/shop/market/list',{itemId:b.dataset.sell,price:Number(price)});toast('Item anunciado na loja de jogadores!','success');state.inventory=(await getJSON('/inventory')).items||[];renderInventoryItems();}catch(err){toast(err.message,'error');}});
 
@@ -386,14 +388,22 @@ function populateCustomizer(){
   $('#customEyes').value=state.profile.avatar.eyes||'#1d2433';$('#customHairColor').value=state.profile.avatar.hairColor||'#171717';$('#customEyes').onchange=e=>{state.profile.avatar.eyes=e.target.value;renderCharacter('#customCharacter',state.profile.avatar)};$('#customHairColor').onchange=e=>{state.profile.avatar.hairColor=e.target.value;renderCharacter('#customCharacter',state.profile.avatar)};
 }
 function openCustomize(){populateCustomizer();show('#customizeModal');renderCharacter('#customCharacter',state.profile.avatar);}
-async function saveCharacter(){try{const d=await postJSON('/profile',{avatar:state.profile.avatar,settings:state.profile.settings,bio:state.profile.bio||''},{method:'PUT'});state.profile=d.profile;hide('#customizeModal');renderCharacter('#heroCharacter',state.profile.avatar);renderCharacter('#profileCharacterLarge',state.profile.avatar);toast('Personagem salvo!','success');}catch(e){toast(e.message,'error');}}
+async function saveCharacter(){try{const d=await postJSON('/profile',{avatar:state.profile.avatar,settings:state.profile.settings,bio:state.profile.bio||''},{method:'PUT'});state.profile=d.profile;hide('#customizeModal');renderCharacter('#heroCharacter',state.profile.avatar);renderCharacter('#heroCharacterLarge',state.profile.avatar);renderCharacter('#profileCharacterLarge',state.profile.avatar);toast('Personagem salvo!','success');}catch(e){toast(e.message,'error');}}
 async function saveSettingsFromUI(){if(!state.profile)return;state.profile.settings={music:$('#setMusic').checked,musicVolume:Number($('#setMusicVol').value),sfx:$('#setSfx').checked,sfxVolume:Number($('#setSfxVol').value),animations:$('#setAnimations').checked,reducedMotion:$('#setReducedMotion').checked,chatWorld:$('#setWorldChat').checked,chatRoom:$('#setRoomChat').checked,chatPrivate:$('#setPrivateChat').checked};SoundFX.enabled=state.profile.settings.sfx;SoundFX.volume=state.profile.settings.sfxVolume;BackgroundMusic.setVolume(state.profile.settings.musicVolume);BackgroundMusic.setEnabled(state.profile.settings.music);localStorage.setItem('uv_reduced_motion',state.profile.settings.reducedMotion?'1':'0'); localStorage.setItem('uv_audio_settings',JSON.stringify({music:state.profile.settings.music,musicVolume:state.profile.settings.musicVolume,sfx:state.profile.settings.sfx,sfxVolume:state.profile.settings.sfxVolume}));document.documentElement.style.setProperty('--motion',state.profile.settings.reducedMotion?'0':'1');try{const d=await postJSON('/profile',{avatar:state.profile.avatar,settings:state.profile.settings,bio:state.profile.bio||''},{method:'PUT'});state.profile=d.profile;}catch{}}
 function applySettings(){const s=state.profile.settings||defaultClientSettings();state.settings=s;$('#setMusic').checked=s.music;$('#setMusicVol').value=s.musicVolume;$('#setSfx').checked=s.sfx;$('#setSfxVol').value=s.sfxVolume;$('#setAnimations').checked=s.animations;$('#setReducedMotion').checked=s.reducedMotion;$('#setWorldChat').checked=s.chatWorld;$('#setRoomChat').checked=s.chatRoom;$('#setPrivateChat').checked=s.chatPrivate;SoundFX.enabled=s.sfx;SoundFX.volume=s.sfxVolume;}
 
 function renderCharacter(selector,a){const el=typeof selector==='string'?$(selector):selector;if(!el||!a)return;const hair=a.hair||'hair_basic';const hairColor=a.hairColor||'#171717';el.innerHTML=`<div class="char-aura ${a.effect||''}"></div><div class="char-body" style="--skin:${a.skinColor||'#d59b76'};--eyes:${a.eyes||'#1d2433'}"><div class="char-head"><div class="char-hair ${hair}" style="--hair:${hairColor}"></div><div class="char-eye left"></div><div class="char-eye right"></div><div class="char-mouth"></div></div><div class="char-torso ${a.top||'shirt_basic'}"></div><div class="char-bottom ${a.bottom||'pants_basic'}"></div><div class="char-shoes ${a.shoes||'shoes_basic'}"></div><div class="char-accessory ${a.accessory||''}"></div></div>`;}
 
-async function openRank(){navigate('rank');try{const d=await getJSON('/rank');$('#rankRows').innerHTML=(d.players||[]).map((p,i)=>`<div class="rank-row ${p.username===state.user.username?'me':''}"><span>${i<3?['🥇','🥈','🥉'][i]:i+1}</span><b>${escapeHtml(p.username)}</b><span>${formatNum(p.gamesPlayed||p.games_played||0)}</span><span>${formatNum(p.wins||0)}</span><span>${Number(p.winRate||0).toFixed(1)}%</span></div>`).join('')||'<div class="empty-state">Nenhum jogador.</div>';}catch(e){toast(e.message,'error');}}
-async function logout(){try{await postJSON('/logout',undefined);}catch{}try{state.socket?.disconnect()}catch{}state.user=null;state.profile=null;state.token=null;BackgroundMusic.stop();hide('#appScreen');show('#authScreen');}
+async function openRank(){navigate('rank');try{const d=await getJSON('/rank');$('#rankSeasonLabel').textContent=`TEMPORADA ${d.season?.seasonNumber||1}`;$('#rankRows').innerHTML=(d.players||[]).map((p,i)=>`<div class="rank-row ${p.username===state.user.username?'me':''}"><span>${i<3?['🥇','🥈','🥉'][i]:i+1}</span><b>${escapeHtml(p.username)}</b><span>${formatNum(p.gamesPlayed||p.games_played||0)}</span><span>${formatNum(p.wins||0)}</span><span>${Number(p.winRate||0).toFixed(1)}%</span></div>`).join('')||'<div class="empty-state">Nenhum jogador.</div>';}catch(e){toast(e.message,'error');}}
+async function loadSeasonPanel(){
+  const box=$('#ceoSeasonPanel'); if(!box)return;
+  if(state.user?.role!=='CEO'){box.classList.add('hidden');return;}
+  box.classList.remove('hidden');
+  try{const d=await getJSON('/season');const x=d.season; $('#seasonNumber').textContent=x.seasonNumber; const end=new Date(x.endsAt); const update=()=>{const ms=end-Date.now(); if(ms<=0){$('#seasonCountdown').textContent='TEMPORADA ENCERRADA';show('#btnNextSeason');}else{$('#seasonCountdown').textContent=formatDuration(ms);hide('#btnNextSeason');}};update();clearInterval(loadSeasonPanel.timer);loadSeasonPanel.timer=setInterval(update,1000);$('#btnScheduleSeason').onclick=async()=>{const days=Number($('#seasonDays').value);try{const r=await postJSON('/season/schedule',{days});$('#seasonCountdown').textContent=formatDuration(new Date(r.season.endsAt)-Date.now());toast('Cronômetro da temporada atualizado.','success');}catch(e){toast(e.message,'error')}};$('#btnNextSeason').onclick=async()=>{try{await postJSON('/season/next',{});showSeasonNewAnimation();loadSeasonPanel();loadMiniRank();}catch(e){toast(e.message,'error')}};}catch(e){toast(e.message,'error')}}
+function formatDuration(ms){let s=Math.max(0,Math.floor(ms/1000));const d=Math.floor(s/86400);s%=86400;const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;return `${d}d ${String(h).padStart(2,'0')}h ${String(m).padStart(2,'0')}m ${String(s).padStart(2,'0')}s`;}
+function showSeasonNewAnimation(){const el=$('#seasonNewOverlay');if(!el)return;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),4200);}
+
+async function logout(){try{await postJSON('/logout',undefined);}catch{}try{state.socket?.disconnect()}catch{}state.user=null;state.profile=null;state.token=null;state.currentRoom=null;try{sessionStorage.removeItem('uno50_view');sessionStorage.removeItem('uno50_room');}catch{}BackgroundMusic.stop();$$('.view').forEach(v=>v.classList.add('hidden'));hide('#appScreen');show('#authScreen');switchAuthMode('login');$('#loginPassword').value='';window.scrollTo(0,0);}
 
 
 async function refreshResourceStatus(){const el=$('#resourceStatus');if(!el)return;const ok=await verifyAllResources();el.textContent=ok?'✅ Todos os recursos estão salvos neste dispositivo.':'⚠️ Alguns recursos ainda não foram baixados.';el.className=`form-message ${ok?'success':'info'}`;}
