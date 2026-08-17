@@ -74,17 +74,41 @@ async function initDatabase() {
     console.warn('⚠️ DATABASE_URL ausente. Modo local somente para desenvolvimento.');
     usePostgres=false; localDb(); return;
   }
+
   pool = new Pool({ connectionString:process.env.DATABASE_URL, ssl:{rejectUnauthorized:false}, max:8, idleTimeoutMillis:30000, connectionTimeoutMillis:10000, keepAlive:true, keepAliveInitialDelayMillis:10000, statement_timeout:15000, query_timeout:20000 });
   pool.on('error',err=>console.error('❌ PostgreSQL pool:',err.message));
+
+  // O banco precisa ficar pronto para LOGIN/CADASTRO mesmo que uma configuração
+  // administrativa (como a senha inicial do CEO) esteja faltando.
   await pool.query('SELECT 1');
   const schema=fs.readFileSync(path.join(__dirname,'schema.sql'),'utf8');
   await pool.query(schema);
-  const seedPath=path.join(__dirname,'seed.sql');
-  if(fs.existsSync(seedPath)){const seed=fs.readFileSync(seedPath,'utf8');if(seed.trim())await pool.query(seed);}
   usePostgres=true;
-  await ensureCeo();
-  await ensureSeason();
-  console.log('✅ PostgreSQL conectado, schema verificado e temporada inicial pronta.');
+
+  // O catálogo é importante para Loja/Inventário, mas uma falha nele não pode
+  // derrubar Login/Cadastro. O seed é idempotente e pode ser corrigido sem apagar dados.
+  try {
+    const seedPath=path.join(__dirname,'seed.sql');
+    if(fs.existsSync(seedPath)){const seed=fs.readFileSync(seedPath,'utf8');if(seed.trim())await pool.query(seed);}
+  } catch(err) {
+    console.error('⚠️ Catálogo seed não aplicado:',err.message);
+  }
+
+  // O CEO é exclusivo. Se CEO_INITIAL_PASSWORD ainda não foi configurada,
+  // não bloqueamos o jogo inteiro: jogadores normais continuam podendo entrar.
+  try {
+    await ensureCeo();
+  } catch(err) {
+    console.error('⚠️ CEO ainda não configurado:',err.message);
+  }
+
+  try {
+    await ensureSeason();
+  } catch(err) {
+    console.error('⚠️ Temporada ainda não inicializada:',err.message);
+  }
+
+  console.log('✅ PostgreSQL conectado e banco estrutural pronto.');
 }
 
 async function ensureCeo(){
@@ -563,14 +587,20 @@ app.use((req,res,next)=>{if(req.path.startsWith('/api/')&&!res.headersSent&&req.
 server.listen(PORT,'0.0.0.0',()=>{
   console.log(`🚀 UNO50 ativo na porta ${PORT}`);
   databaseReadyPromise=(async()=>{
-    try{
-      await initDatabase();
-      globalState=await getGlobalState();
-      databaseReady=true;
-      console.log('✅ Banco de dados pronto para as requisições.');
-    }catch(err){
-      databaseReadyError=err;
-      console.error('❌ Falha ao finalizar inicialização do banco:',err.message);
+    const maxAttempts=8;
+    for(let attempt=1;attempt<=maxAttempts;attempt++){
+      try{
+        await initDatabase();
+        globalState=await getGlobalState();
+        databaseReady=true;
+        databaseReadyError=null;
+        console.log('✅ Banco de dados pronto para as requisições.');
+        return;
+      }catch(err){
+        databaseReadyError=err;
+        console.error(`❌ Falha ao inicializar banco (tentativa ${attempt}/${maxAttempts}):`,err.message);
+        if(attempt<maxAttempts) await new Promise(r=>setTimeout(r,Math.min(10000,1500*attempt)));
+      }
     }
   })();
 });
