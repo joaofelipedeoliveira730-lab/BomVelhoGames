@@ -1,8 +1,8 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const API = '/api';
-const RESOURCE_VERSION = 'unovelho-matx-v7';
-const LOCAL_RESOURCE_STATE = 'unovelho.resources.v7';
+const RESOURCE_VERSION = 'unovelho-matx-v8';
+const LOCAL_RESOURCE_STATE = 'unovelho.resources.v8';
 
 const refs = {
   maps: [
@@ -109,16 +109,31 @@ function showResourceMessage(){toast('Mapa ainda não está disponível neste di
 
 
 function init(){
+  // Nunca deixe a tela de boot presa por causa de um erro de inicialização.
+  hide('#bootScreen');
   registerOfflineWorker();
   document.documentElement.style.setProperty('--motion',localStorage.getItem('uv_reduced_motion')==='1'?'0':'1');
-  bindStaticEvents();
+
+  try{
+    bindStaticEvents();
+  }catch(err){
+    console.error('Falha ao vincular os eventos da interface:',err);
+    // A tela de autenticação continua acessível mesmo se algum recurso opcional falhar.
+    show('#authScreen');
+  }
+
   setTimeout(async()=>{
-    hide('#bootScreen');
-    const accepted=localStorage.getItem('uno_terms_accepted')==='1';
-    const saved=(()=>{try{return JSON.parse(localStorage.getItem(LOCAL_RESOURCE_STATE)||'{}')}catch{return {}}})();
-    const complete=accepted && saved.version===RESOURCE_VERSION && await verifyAllResources();
-    if(!complete)show('#termsModal');else await bootAuth();
-  },350);
+    try{
+      const accepted=localStorage.getItem('uno_terms_accepted')==='1';
+      const saved=(()=>{try{return JSON.parse(localStorage.getItem(LOCAL_RESOURCE_STATE)||'{}')}catch{return {}}})();
+      const complete=accepted && saved.version===RESOURCE_VERSION && await verifyAllResources();
+      if(!complete)show('#termsModal');else await bootAuth();
+    }catch(err){
+      console.error('Falha durante o boot:',err);
+      show('#authScreen');
+      hide('#termsModal');
+    }
+  },50);
 }
 
 async function bootAuth(){

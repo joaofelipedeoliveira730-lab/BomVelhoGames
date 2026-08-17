@@ -103,6 +103,17 @@
   <div id="colorModal" class="modal-overlay hidden"><div class="modal modal-narrow"><div class="math-icon">🌈</div><h2>Escolha a cor</h2><div class="color-picker"><button data-color="red">VERMELHO</button><button data-color="yellow">AMARELO</button><button data-color="green">VERDE</button><button data-color="blue">AZUL</button></div></div></div>
   <div id="toastContainer" class="toast-container"></div>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="app.js?v=20260817-fix-loading"></script>
+  <script src="app.js?v=20260817-fix-loading-v2"></script>
+  <script>
+    // Fallback visual: um erro de JavaScript/rede não pode deixar o usuário preso no loader.
+    window.setTimeout(function(){
+      var boot=document.getElementById('bootScreen');
+      var auth=document.getElementById('authScreen');
+      if(boot && !boot.classList.contains('hidden')){
+        boot.classList.add('hidden');
+        if(auth) auth.classList.remove('hidden');
+      }
+    }, 5000);
+  </script>
 </body>
 </html>
