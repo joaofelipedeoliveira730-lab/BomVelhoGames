@@ -1,6 +1,4 @@
--- UNO50 — banco estrutural limpo.
--- Este schema é seguro para inicialização: cria/atualiza estruturas sem apagar dados.
-
+-- UnoVelho Matematixa - PostgreSQL schema (não destrutivo)
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
   username VARCHAR(50) UNIQUE NOT NULL,
@@ -12,10 +10,18 @@ CREATE TABLE IF NOT EXISTS users (
   wins INT NOT NULL DEFAULT 0,
   losses INT NOT NULL DEFAULT 0,
   games_played INT NOT NULL DEFAULT 0,
-  admin_rank INT,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_login_at TIMESTAMP
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS coins BIGINT NOT NULL DEFAULT 500;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS xp BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS level INT NOT NULL DEFAULT 1;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS wins INT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS losses INT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS games_played INT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS profiles (
   user_id INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -55,18 +61,6 @@ CREATE TABLE IF NOT EXISTS player_market (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   sold_at TIMESTAMP
 );
-
-
-CREATE TABLE IF NOT EXISTS user_mode_stats (
-  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  mode VARCHAR(20) NOT NULL,
-  games_played INT NOT NULL DEFAULT 0,
-  wins INT NOT NULL DEFAULT 0,
-  losses INT NOT NULL DEFAULT 0,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (user_id, mode)
-);
-CREATE INDEX IF NOT EXISTS idx_user_mode_stats_user ON user_mode_stats(user_id, mode);
 
 CREATE TABLE IF NOT EXISTS achievements (
   id VARCHAR(80) PRIMARY KEY,
@@ -129,22 +123,8 @@ CREATE TABLE IF NOT EXISTS moderation_actions (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-
-CREATE TABLE IF NOT EXISTS seasons (
-  id SERIAL PRIMARY KEY,
-  season_number INT NOT NULL UNIQUE,
-  starts_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  ends_at TIMESTAMP NOT NULL,
-  status VARCHAR(20) NOT NULL DEFAULT 'active',
-  created_by INT REFERENCES users(id) ON DELETE SET NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  closed_at TIMESTAMP
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_season ON seasons(status) WHERE status='active';
-
 CREATE TABLE IF NOT EXISTS global_game_state (
-  id INT PRIMARY KEY CHECK (id=1),
+  id INT PRIMARY KEY CHECK (id = 1),
   paused BOOLEAN NOT NULL DEFAULT FALSE,
   message VARCHAR(500) NOT NULL DEFAULT '',
   updated_by INT REFERENCES users(id) ON DELETE SET NULL,
@@ -170,15 +150,43 @@ CREATE TABLE IF NOT EXISTS reports (
   resolved_at TIMESTAMP
 );
 
-ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_rank INT;
 CREATE INDEX IF NOT EXISTS idx_users_level ON users(level DESC, xp DESC);
-CREATE INDEX IF NOT EXISTS idx_users_admin_rank ON users(admin_rank);
+CREATE INDEX IF NOT EXISTS idx_users_coins ON users(coins DESC);
 CREATE INDEX IF NOT EXISTS idx_inventory_user ON user_inventory(user_id);
 CREATE INDEX IF NOT EXISTS idx_market_status ON player_market(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_channel_room ON chat_messages(channel, room_code, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_receiver ON chat_messages(receiver_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_matches_started ON matches(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_admin_logs_created ON admin_logs(created_at DESC);
 
 INSERT INTO global_game_state(id, paused, message)
 VALUES (1, FALSE, '')
-ON CONFLICT(id) DO NOTHING;
+ON CONFLICT (id) DO NOTHING;
+
+-- Compatibilidade com instalações antigas: migração de nomes usados em versões anteriores.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='bruto_coins') THEN
+    EXECUTE 'UPDATE users SET coins = GREATEST(coins, bruto_coins) WHERE bruto_coins IS NOT NULL';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='xp') THEN
+    EXECUTE 'UPDATE users SET level = GREATEST(1, FLOOR(xp / 250)::int + 1)';
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS game_season (
+  id INT PRIMARY KEY CHECK (id=1),
+  season_number INT NOT NULL DEFAULT 1,
+  starts_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ends_at TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days')
+);
+INSERT INTO game_season(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='password_hash') THEN
+    ALTER TABLE profiles ALTER COLUMN password_hash DROP NOT NULL;
+  END IF;
+END $$;

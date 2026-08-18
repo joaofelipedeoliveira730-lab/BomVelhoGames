@@ -1,62 +1,97 @@
--- UNO50 3.6 — catálogo oficial reformulado
-UPDATE items SET is_active=FALSE;
-INSERT INTO items(id,name,category,description,price,xp_required,rarity,asset,is_active) VALUES
-('deck_classic','Baralho UNO50 Clássico','deck','Baralho padrão do UNO50.',0,0,'common','{"theme":"classic"}',TRUE),
-('map_classroom','Sala de Aula','map','Mapa leve para partidas rápidas.',0,0,'common','{"theme":"classroom"}',TRUE),
-('map_pirate','Navio Pirata','map','Mesa pirata com iluminação e clima de aventura.',1200,500,'epic','{"theme":"pirate"}',TRUE),
-('map_saloon','Saloon Clássico','map','Taverna aconchegante para partidas.',800,250,'rare','{"theme":"saloon"}',TRUE),
-('map_neon_city','Cidade Neon','map','Mesa urbana com luzes neon.',1600,1000,'epic','{"theme":"neon"}',TRUE),
-('map_forest','Floresta UNO','map','Mesa natural com brilho suave.',900,350,'rare','{"theme":"forest"}',TRUE),
-('map_desert','Deserto Dourado','map','Mesa quente com atmosfera dourada.',1000,450,'rare','{"theme":"desert"}',TRUE),
-('map_ice','Montanha Congelada','map','Mesa gelada com efeitos azuis.',1400,800,'epic','{"theme":"ice"}',TRUE),
-('map_space','Estação Espacial','map','Mesa futurista em órbita.',1800,1200,'legendary','{"theme":"space"}',TRUE),
-('map_geometry','Laboratório UNO','map','Mapa futurista de treinamento.',700,150,'rare','{"theme":"geometry"}',TRUE),
-('map_ceo','Dimensão CEO','map','Mapa reservado ao CEO.',0,0,'legendary','{"theme":"ceo","ceoOnly":true}',TRUE),
-('hair_basic','Cabelo Clássico','hair','Visual inicial.',0,0,'common','{"style":"classic"}',TRUE),
-('hair_curl','Cachos Modernos','hair','Cabelo volumoso e divertido.',1200,100,'common','{"style":"curl"}',TRUE),
-('hair_long','Cabelo Longo','hair','Visual elegante.',1800,200,'rare','{"style":"long"}',TRUE),
-('hair_mohawk','Moicano Neon','hair','Visual energético.',3200,500,'epic','{"style":"mohawk"}',TRUE),
-('hair_afro','Afro Estiloso','hair','Volume e personalidade.',2200,250,'rare','{"style":"afro"}',TRUE),
-('hair_braids','Tranças Urbanas','hair','Visual marcante.',2600,400,'rare','{"style":"braids"}',TRUE),
-('hair_ice','Cabelo Gelo','hair','Brilho frio futurista.',5000,900,'epic','{"style":"ice"}',TRUE),
-('hair_ceo','Cabelo CEO','hair','Visual exclusivo do CEO.',0,0,'legendary','{"style":"ceo","ceoOnly":true}',TRUE),
-('shirt_basic','Camiseta UNO50','clothing','Roupa inicial.',0,0,'common','{"style":"basic"}',TRUE),
-('shirt_red','Jaqueta Rubi','clothing','Jaqueta vermelha com acabamento brilhante.',1500,150,'common','{"style":"red"}',TRUE),
-('shirt_neon','Jaqueta Neon','clothing','Roupa com identidade neon.',3500,500,'rare','{"style":"neon"}',TRUE),
-('shirt_gold','Casaco Dourado','clothing','Visual dourado de prestígio.',7000,1000,'epic','{"style":"gold"}',TRUE),
-('shirt_space','Traje Espacial','clothing','Roupa futurista.',9500,1500,'legendary','{"style":"space"}',TRUE),
-('pants_basic','Calça Clássica','clothing','Roupa inicial.',0,0,'common','{"style":"basic"}',TRUE),
-('pants_black','Calça Eclipse','clothing','Visual escuro elegante.',1000,100,'common','{"style":"black"}',TRUE),
-('pants_neon','Calça Neon','clothing','Combina com a jaqueta neon.',2800,450,'rare','{"style":"neon"}',TRUE),
-('shoes_basic','Tênis Clássico','clothing','Calçado inicial.',0,0,'common','{"style":"basic"}',TRUE),
-('shoes_red','Tênis Rubi','clothing','Tênis vermelho esportivo.',1200,100,'common','{"style":"red"}',TRUE),
-('shoes_gold','Botas Douradas','clothing','Botas de destaque.',6000,800,'epic','{"style":"gold"}',TRUE),
-('glasses_basic','Óculos Clássicos','accessory','Óculos discretos.',700,50,'common','{"style":"basic"}',TRUE),
-('glasses_cyan','Óculos Ciano','accessory','Lentes neon.',2200,250,'rare','{"style":"cyan"}',TRUE),
-('glasses_gold','Óculos Dourados','accessory','Detalhe premium.',5000,600,'epic','{"style":"gold"}',TRUE),
-('hat_cap','Boné Urbano','accessory','Boné casual.',900,100,'common','{"style":"hat_cap"}',TRUE),
-('hat_cowboy','Chapéu do Capitão','accessory','Chapéu inspirado no mapa pirata.',4200,500,'rare','{"style":"hat_cowboy"}',TRUE),
-('hat_crown','Coroa Lendária','accessory','Coroa para quem domina a mesa.',15000,2500,'legendary','{"style":"hat_crown"}',TRUE),
-('backpack_blue','Mochila Ciano','accessory','Mochila compacta.',2500,300,'rare','{"style":"backpack_blue"}',TRUE),
-('backpack_space','Mochila Orbital','accessory','Acessório futurista.',8000,1000,'epic','{"style":"backpack_space"}',TRUE),
-('parrot_shoulder','Papagaio Companheiro','accessory','Companheiro cosmético de ombro.',10000,900,'epic','{"style":"parrot"}',TRUE),
-('pirate_compass','Bússola do Capitão','accessory','Acessório temático pirata.',6500,600,'rare','{"style":"compass"}',TRUE),
-('aura_blue','Aura Ciano','effect','Brilho azul suave.',3000,300,'rare','{"theme":"blue"}',TRUE),
-('aura_gold','Aura Dourada','effect','Brilho dourado premium.',7500,1000,'epic','{"theme":"gold"}',TRUE),
-('aura_rainbow','Aura Prisma','effect','Aura multicolorida.',12000,1800,'legendary','{"theme":"rainbow"}',TRUE),
-('emote_wave','Aceno','emote','Emote inicial.',0,0,'common','{}',TRUE),
-('emote_fire','Fogo','emote','Comemore uma jogada incrível.',2200,300,'rare','{}',TRUE),
-('emote_dance','Dança da Vitória','emote','Animação de vitória.',6000,900,'epic','{}',TRUE),
-('emote_cheer','Torcida','emote','Comemore com a mesa.',4000,500,'rare','{}',TRUE),
-('title_beginner','INICIANTE','title','Emblema inicial.',0,0,'common','{}',TRUE),
-('title_calculator','MESTRE DAS CARTAS','title','Emblema de veterano.',4500,700,'rare','{}',TRUE),
-('title_master','LENDÁRIO','title','Emblema de alto nível.',11000,2500,'epic','{}',TRUE),
-('title_ceo','DONO DO JOGO','title','Emblema administrativo exclusivo.',0,0,'legendary','{"ceoOnly":true}',TRUE)
-ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,category=EXCLUDED.category,description=EXCLUDED.description,price=EXCLUDED.price,xp_required=EXCLUDED.xp_required,rarity=EXCLUDED.rarity,asset=EXCLUDED.asset,is_active=EXCLUDED.is_active;
-INSERT INTO items(id,name,category,description,price,xp_required,rarity,asset,is_active) VALUES ('title_owner','DONO DO JOGO','title','Emblema exclusivo do CEO, com efeito lendário.',0,0,'mythic','{"ceoOnly":true,"effect":"owner"}',TRUE) ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,rarity=EXCLUDED.rarity,asset=EXCLUDED.asset,is_active=EXCLUDED.is_active;
+-- Seed idempotente: NÃO apaga usuários.
 INSERT INTO achievements(id,name,description,icon,xp_reward,coin_reward) VALUES
-('first_game','Primeira partida','Jogue sua primeira partida.','🎮',50,50),
-('first_win','Primeira vitória','Vença uma partida.','🏆',100,100),
-('ten_wins','10 vitórias','Alcance 10 vitórias.','👑',500,500),
-('collector','Colecionador','Desbloqueie 10 itens cosméticos.','🎒',300,300)
-ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,icon=EXCLUDED.icon,xp_reward=EXCLUDED.xp_reward,coin_reward=EXCLUDED.coin_reward;
+('first_win','Primeira Vitória','Vença sua primeira partida.','🏆',100,100),
+('uno_call','UNO!','Grite UNO na hora certa.','📣',80,80),
+('online_first','Primeiro Online','Finalize uma partida online.','🌎',200,200),
+('online_win','Campeão Online','Vença uma partida online.','👑',400,400),
+('collector','Colecionador','Desbloqueie 10 itens.','🎒',350,350),
+('level_10','Nível 10','Alcance o nível 10.','⭐',500,500),
+('level_25','Nível 25','Alcance o nível 25.','💎',1000,1000),
+('level_50','Nível 50','Alcance o nível 50.','🔥',2000,2000),
+('market_first','Mercador','Faça sua primeira venda na loja de jogadores.','🛍',250,250),
+('survivor','Sobrevivente','Termine uma partida com 1 carta na mão.','🃏',250,250)
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, icon=EXCLUDED.icon, xp_reward=EXCLUDED.xp_reward, coin_reward=EXCLUDED.coin_reward;
+
+-- 120 itens: catálogo leve, sem imagens pesadas; o frontend gera os visuais com CSS.
+INSERT INTO items(id,name,category,description,price,xp_required,rarity,asset) VALUES
+('map_saloon','Saloon Clássico','map','Arena inspirada na mesa da referência enviada.',0,0,'rare','{"theme":"saloon"}'),
+('map_classroom','Sala de Aula','map','Mapa clássico.',0,0,'common','{"theme":"classroom"}'),
+('map_geometry','Laboratório Geométrico','map','Formas e neon.',900,250,'rare','{"theme":"geometry"}'),
+('map_neon_city','Cidade Neon','map','Arena azul neon futurista.',1800,800,'epic','{"theme":"neon"}'),
+('map_forest','Floresta Matemática','map','Mesa em meio à floresta.',1500,600,'rare','{"theme":"forest"}'),
+('map_desert','Deserto Dourado','map','Arena quente e dourada.',2200,1200,'epic','{"theme":"desert"}'),
+('map_ice','Montanha Congelada','map','Mesa de gelo com brilho azul.',2600,1600,'epic','{"theme":"ice"}'),
+('map_space','Estação Espacial','map','Arena fora da Terra.',3200,2200,'legendary','{"theme":"space"}'),
+('map_math_dimension','Dimensão Matemática','map','Portal neon animado.',4000,3000,'legendary','{"theme":"math"}'),
+('map_ceo','Dimensão CEO','map','Arena exclusiva do CEO.',0,0,'legendary','{"theme":"ceo","ceoOnly":true}'),
+('deck_classic','Baralho Clássico','deck','Visual tradicional.',0,0,'common','{"theme":"classic"}'),
+('deck_white','Baralho White Glass','deck','Cartas brancas com contorno luminoso.',700,200,'rare','{"theme":"white"}'),
+('deck_cyber','Baralho Cyber Neon','deck','Cartas neon futuristas.',1600,700,'epic','{"theme":"cyber"}'),
+('deck_gold','Baralho Ouro CEO','deck','Baralho dourado exclusivo.',0,0,'legendary','{"theme":"gold","ceoOnly":true}'),
+('hair_basic','Cabelo Básico','hair','Visual inicial.',0,0,'common','{"style":"short","color":"black"}'),
+('hair_curl','Cabelo Cacheado','hair','Cacheado volumoso.',350,0,'common','{"style":"curl","color":"brown"}'),
+('hair_long','Cabelo Longo','hair','Cabelo longo.',450,0,'common','{"style":"long","color":"black"}'),
+('hair_mohawk','Moicano Neon','hair','Moicano brilhante.',1200,500,'rare','{"style":"mohawk","color":"cyan"}'),
+('hair_afro','Afro Dourado','hair','Afro estilizado.',1100,450,'rare','{"style":"afro","color":"gold"}'),
+('hair_braids','Tranças Azure','hair','Tranças azuladas.',1400,700,'epic','{"style":"braids","color":"blue"}'),
+('hair_ice','Cabelo Gelo','hair','Cabelo azul cristalino.',2100,1500,'epic','{"style":"long","color":"ice"}'),
+('hair_ceo','Coroa Capilar CEO','hair','Visual exclusivo do CEO.',0,0,'legendary','{"style":"crown","color":"gold","ceoOnly":true}'),
+('shirt_basic','Camiseta Azul','clothing','Roupa inicial.',0,0,'common','{"style":"shirt","color":"blue"}'),
+('shirt_red','Camiseta Vermelha','clothing','Roupa vibrante.',300,0,'common','{"style":"shirt","color":"red"}'),
+('shirt_neon','Jaqueta Neon','clothing','Jaqueta futurista.',1000,400,'rare','{"style":"jacket","color":"cyan"}'),
+('shirt_gold','Jaqueta Ouro','clothing','Jaqueta dourada.',1700,900,'epic','{"style":"jacket","color":"gold"}'),
+('shirt_space','Traje Espacial','clothing','Traje de astronauta.',2800,2000,'legendary','{"style":"space","color":"white"}'),
+('pants_basic','Calça Azul','clothing','Calça inicial.',0,0,'common','{"style":"pants","color":"blue"}'),
+('pants_black','Calça Preta','clothing','Calça clássica.',250,0,'common','{"style":"pants","color":"black"}'),
+('pants_neon','Calça Neon','clothing','Calça futurista.',900,350,'rare','{"style":"pants","color":"cyan"}'),
+('shoes_basic','Tênis Branco','shoes','Tênis inicial.',0,0,'common','{"style":"sneaker","color":"white"}'),
+('shoes_red','Tênis Vermelho','shoes','Tênis vibrante.',300,0,'common','{"style":"sneaker","color":"red"}'),
+('shoes_gold','Tênis Dourado','shoes','Tênis de colecionador.',1500,800,'epic','{"style":"sneaker","color":"gold"}'),
+('glasses_basic','Óculos Redondos','accessory','Óculos clássicos.',300,0,'common','{"style":"round","color":"black"}'),
+('glasses_cyan','Óculos Cyber','accessory','Óculos neon.',900,300,'rare','{"style":"cyber","color":"cyan"}'),
+('glasses_gold','Óculos CEO','accessory','Óculos dourados.',0,0,'legendary','{"style":"gold","color":"gold","ceoOnly":true}'),
+('hat_cap','Boné Azul','accessory','Boné simples.',250,0,'common','{"style":"cap","color":"blue"}'),
+('hat_cowboy','Chapéu Cowboy','accessory','Chapéu de arena.',800,250,'rare','{"style":"cowboy","color":"brown"}'),
+('hat_crown','Coroa Real','accessory','Coroa dourada.',2200,1500,'legendary','{"style":"crown","color":"gold"}'),
+('mask_math','Máscara Matemática','accessory','Máscara estilizada.',1000,500,'rare','{"style":"mask","color":"cyan"}'),
+('backpack_blue','Mochila Azul','accessory','Mochila escolar.',450,100,'common','{"style":"backpack","color":"blue"}'),
+('backpack_space','Mochila Espacial','accessory','Mochila futurista.',1700,1000,'epic','{"style":"backpack","color":"purple"}'),
+('aura_blue','Aura Azul','effect','Aura neon.',1300,700,'rare','{"style":"aura","color":"cyan"}'),
+('aura_gold','Aura Dourada','effect','Aura de ouro.',2500,1600,'epic','{"style":"aura","color":"gold"}'),
+('aura_rainbow','Aura Arco-Íris','effect','Aura multicolorida.',3500,2500,'legendary','{"style":"aura","color":"rainbow"}'),
+('emote_wave','Emote Aceno','emote','Aceno de entrada.',150,0,'common','{"style":"wave"}'),
+('emote_math','Emote Matemático','emote','Comemoração especial.',600,200,'rare','{"style":"math"}'),
+('emote_fire','Emote Fogo','emote','Comemoração flamejante.',1400,800,'epic','{"style":"fire"}'),
+('title_beginner','Título: Iniciante','title','Título inicial.',0,0,'common','{"text":"INICIANTE"}'),
+('title_calculator','Título: Calculista','title','Título para quem domina contas.',900,600,'rare','{"text":"CALCULISTA"}'),
+('title_master','Título: Mestre Matematixa','title','Título lendário.',3000,2500,'legendary','{"text":"MESTRE MATEMATIXA"}'),
+('title_ceo','Título: CEO','title','Título exclusivo.',0,0,'legendary','{"text":"CEO","ceoOnly":true}'),
+('table_blue','Mesa Blue Blur','table','Mesa azul glass.',800,300,'rare','{"theme":"blue"}'),
+('table_red','Mesa Rubi','table','Mesa rubi.',1200,600,'rare','{"theme":"ruby"}'),
+('table_gold','Mesa Ouro','table','Mesa dourada.',2500,1500,'epic','{"theme":"gold"}'),
+('table_ceo','Mesa CEO','table','Mesa exclusiva.',0,0,'legendary','{"theme":"ceo","ceoOnly":true}')
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, category=EXCLUDED.category, description=EXCLUDED.description, price=EXCLUDED.price, xp_required=EXCLUDED.xp_required, rarity=EXCLUDED.rarity, asset=EXCLUDED.asset;
+
+-- Gera mais itens cosméticos até ultrapassar 100 itens sem imagens pesadas.
+DO $$
+DECLARE i INT;
+BEGIN
+  FOR i IN 1..75 LOOP
+    INSERT INTO items(id,name,category,description,price,xp_required,rarity,asset)
+    VALUES(
+      'cosmetic_'||LPAD(i::text,3,'0'),
+      CASE WHEN i % 5 = 0 THEN 'Skin Especial #'||i ELSE 'Acessório Matematixa #'||i END,
+      CASE WHEN i % 5 = 0 THEN 'skin' ELSE 'accessory' END,
+      'Item cosmético leve gerado pelo catálogo.',
+      200 + i*90,
+      CASE WHEN i < 10 THEN 0 ELSE i*75 END,
+      CASE WHEN i % 10 = 0 THEN 'legendary' WHEN i % 5 = 0 THEN 'epic' WHEN i % 2 = 0 THEN 'rare' ELSE 'common' END,
+      jsonb_build_object('style','generated','variant',i)
+    ) ON CONFLICT (id) DO NOTHING;
+  END LOOP;
+END $$;
+
+-- Itens iniciais são concedidos por login/registro pelo servidor.
+
+UPDATE items SET price=GREATEST(200,LEAST(15000,price)) WHERE COALESCE((asset->>'ceoOnly')::boolean,false)=false;
+UPDATE items SET price=GREATEST(5000,LEAST(15000,price)) WHERE COALESCE((asset->>'ceoOnly')::boolean,false)=true;
