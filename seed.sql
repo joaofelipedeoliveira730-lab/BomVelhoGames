@@ -1,6 +1,8 @@
 -- Seed idempotente: NÃO apaga usuários.
 INSERT INTO achievements(id,name,description,icon,xp_reward,coin_reward) VALUES
 ('first_win','Primeira Vitória','Vença sua primeira partida.','🏆',100,100),
+('math_10','Mente Matemática','Acerte 10 desafios matemáticos.','🧠',150,150),
+('math_50','Calculista','Acerte 50 desafios matemáticos.','📐',500,500),
 ('uno_call','UNO!','Grite UNO na hora certa.','📣',80,80),
 ('online_first','Primeiro Online','Finalize uma partida online.','🌎',200,200),
 ('online_win','Campeão Online','Vença uma partida online.','👑',400,400),
@@ -8,21 +10,21 @@ INSERT INTO achievements(id,name,description,icon,xp_reward,coin_reward) VALUES
 ('level_10','Nível 10','Alcance o nível 10.','⭐',500,500),
 ('level_25','Nível 25','Alcance o nível 25.','💎',1000,1000),
 ('level_50','Nível 50','Alcance o nível 50.','🔥',2000,2000),
-('market_first','Mercador','Faça sua primeira venda na loja de jogadores.','🛍',250,250),
+('market_first','Mercador','Faça sua primeira venda na loja de jogadores.','🛍️',250,250),
 ('survivor','Sobrevivente','Termine uma partida com 1 carta na mão.','🃏',250,250)
 ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, icon=EXCLUDED.icon, xp_reward=EXCLUDED.xp_reward, coin_reward=EXCLUDED.coin_reward;
 
 -- 120 itens: catálogo leve, sem imagens pesadas; o frontend gera os visuais com CSS.
 INSERT INTO items(id,name,category,description,price,xp_required,rarity,asset) VALUES
-('map_saloon','Saloon Clássico','map','Arena inspirada na mesa da referência enviada.',0,0,'rare','{"theme":"saloon"}'),
-('map_classroom','Sala de Aula','map','Mapa clássico.',0,0,'common','{"theme":"classroom"}'),
-('map_geometry','Laboratório Geométrico','map','Formas e neon.',900,250,'rare','{"theme":"geometry"}'),
+('map_saloon','Saloon Clássico','map','Arena inspirada na mesa da referência enviada.',0,0,'rare','{"theme":"saloon","image":"assets/reference-arena.jpg"}'),
+('map_classroom','Sala de Aula','map','Mapa matemático clássico.',0,0,'common','{"theme":"classroom"}'),
+('map_geometry','Laboratório Geométrico','map','Formas, neon e matemática.',900,250,'rare','{"theme":"geometry"}'),
 ('map_neon_city','Cidade Neon','map','Arena azul neon futurista.',1800,800,'epic','{"theme":"neon"}'),
 ('map_forest','Floresta Matemática','map','Mesa em meio à floresta.',1500,600,'rare','{"theme":"forest"}'),
 ('map_desert','Deserto Dourado','map','Arena quente e dourada.',2200,1200,'epic','{"theme":"desert"}'),
 ('map_ice','Montanha Congelada','map','Mesa de gelo com brilho azul.',2600,1600,'epic','{"theme":"ice"}'),
 ('map_space','Estação Espacial','map','Arena fora da Terra.',3200,2200,'legendary','{"theme":"space"}'),
-('map_math_dimension','Dimensão Matemática','map','Portal neon animado.',4000,3000,'legendary','{"theme":"math"}'),
+('map_math_dimension','Dimensão Matemática','map','Portal matemático animado.',4000,3000,'legendary','{"theme":"math"}'),
 ('map_ceo','Dimensão CEO','map','Arena exclusiva do CEO.',0,0,'legendary','{"theme":"ceo","ceoOnly":true}'),
 ('deck_classic','Baralho Clássico','deck','Visual tradicional.',0,0,'common','{"theme":"classic"}'),
 ('deck_white','Baralho White Glass','deck','Cartas brancas com contorno luminoso.',700,200,'rare','{"theme":"white"}'),
@@ -53,14 +55,14 @@ INSERT INTO items(id,name,category,description,price,xp_required,rarity,asset) V
 ('hat_cap','Boné Azul','accessory','Boné simples.',250,0,'common','{"style":"cap","color":"blue"}'),
 ('hat_cowboy','Chapéu Cowboy','accessory','Chapéu de arena.',800,250,'rare','{"style":"cowboy","color":"brown"}'),
 ('hat_crown','Coroa Real','accessory','Coroa dourada.',2200,1500,'legendary','{"style":"crown","color":"gold"}'),
-('mask_math','Máscara Matemática','accessory','Máscara estilizada.',1000,500,'rare','{"style":"mask","color":"cyan"}'),
+('mask_math','Máscara Matemática','accessory','Máscara com símbolos.',1000,500,'rare','{"style":"mask","color":"cyan"}'),
 ('backpack_blue','Mochila Azul','accessory','Mochila escolar.',450,100,'common','{"style":"backpack","color":"blue"}'),
 ('backpack_space','Mochila Espacial','accessory','Mochila futurista.',1700,1000,'epic','{"style":"backpack","color":"purple"}'),
 ('aura_blue','Aura Azul','effect','Aura neon.',1300,700,'rare','{"style":"aura","color":"cyan"}'),
 ('aura_gold','Aura Dourada','effect','Aura de ouro.',2500,1600,'epic','{"style":"aura","color":"gold"}'),
 ('aura_rainbow','Aura Arco-Íris','effect','Aura multicolorida.',3500,2500,'legendary','{"style":"aura","color":"rainbow"}'),
 ('emote_wave','Emote Aceno','emote','Aceno de entrada.',150,0,'common','{"style":"wave"}'),
-('emote_math','Emote Matemático','emote','Comemoração especial.',600,200,'rare','{"style":"math"}'),
+('emote_math','Emote Matemático','emote','Comemoração matemática.',600,200,'rare','{"style":"math"}'),
 ('emote_fire','Emote Fogo','emote','Comemoração flamejante.',1400,800,'epic','{"style":"fire"}'),
 ('title_beginner','Título: Iniciante','title','Título inicial.',0,0,'common','{"text":"INICIANTE"}'),
 ('title_calculator','Título: Calculista','title','Título para quem domina contas.',900,600,'rare','{"text":"CALCULISTA"}'),
@@ -93,5 +95,12 @@ END $$;
 
 -- Itens iniciais são concedidos por login/registro pelo servidor.
 
-UPDATE items SET price=GREATEST(200,LEAST(15000,price)) WHERE COALESCE((asset->>'ceoOnly')::boolean,false)=false;
-UPDATE items SET price=GREATEST(5000,LEAST(15000,price)) WHERE COALESCE((asset->>'ceoOnly')::boolean,false)=true;
+-- Evento 01: Egito Antigo — Passe. Recompensas exclusivas e não vendáveis.
+INSERT INTO items(id,name,category,description,price,xp_required,rarity,asset) VALUES
+('event_egypt_scarab','Escaravelho do Nilo','accessory','Acessório exclusivo do Evento Egito Antigo. Não pode ser vendido.','0',0,'rare','{"style":"egypt-scarab","image":"assets/shop/egypt-scarab.svg","event":"egypt_pass_1","unsellable":true}'),
+('event_egypt_amulet','Amuleto do Nilo','accessory','Amuleto exclusivo do Evento Egito Antigo. Não pode ser vendido.','0',0,'epic','{"style":"egypt-amulet","image":"assets/shop/egypt-amulet.svg","event":"egypt_pass_1","unsellable":true}'),
+('event_egypt_headpiece','Adorno Real do Egito','accessory','Adorno exclusivo do Evento Egito Antigo. Não pode ser vendido.','0',0,'epic','{"style":"egypt-headpiece","image":"assets/shop/egypt-headpiece.svg","event":"egypt_pass_1","unsellable":true}'),
+('event_egypt_collar','Gola Dourada do Faraó','accessory','Gola exclusiva do Evento Egito Antigo. Não pode ser vendida.','0',0,'legendary','{"style":"egypt-collar","image":"assets/shop/egypt-collar.svg","event":"egypt_pass_1","unsellable":true}'),
+('event_egypt_crown','Coroa do Faraó','accessory','Coroa exclusiva do Evento Egito Antigo — Nível 50. Não pode ser vendida.','0',0,'legendary','{"style":"pharaoh-crown","image":"assets/shop/pharaoh-crown.svg","event":"egypt_pass_1","unsellable":true}'),
+('event_egypt_wings','Asas do Sol de Rá','effect','Efeito exclusivo do Evento Egito Antigo. Não pode ser vendido.','0',0,'legendary','{"style":"egypt-wings","image":"assets/shop/egypt-wings.svg","event":"egypt_pass_1","unsellable":true}')
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,rarity=EXCLUDED.rarity,asset=EXCLUDED.asset,is_active=true;

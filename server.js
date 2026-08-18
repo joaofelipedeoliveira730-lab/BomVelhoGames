@@ -20,7 +20,7 @@ const isProduction = process.env.NODE_ENV === 'production';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
-if (!JWT_SECRET) console.warn(' JWT_SECRET não definido. Defina-o no Render antes de usar em produção.');
+if (!JWT_SECRET) console.warn('⚠️ JWT_SECRET não definido. Defina-o no Render antes de usar em produção.');
 const jwtSecret = JWT_SECRET || (process.env.DATABASE_URL ? crypto.createHash('sha256').update(process.env.DATABASE_URL).digest('hex') : crypto.createHash('sha256').update('unovelho-local-development-secret').digest('hex'));
 
 app.disable('x-powered-by');
@@ -53,7 +53,7 @@ function saveLocalDb(db) { fs.writeFileSync(localDbPath, JSON.stringify(db, null
 
 async function initDatabase() {
   if (!process.env.DATABASE_URL) {
-    console.warn(' DATABASE_URL ausente. O servidor usará armazenamento local apenas para desenvolvimento.');
+    console.warn('⚠️ DATABASE_URL ausente. O servidor usará armazenamento local apenas para desenvolvimento.');
     usePostgres = false;
     localDb();
     return;
@@ -69,7 +69,7 @@ async function initDatabase() {
     statement_timeout: 15000,
     query_timeout: 20000
   });
-  pool.on('error', err => console.error(' PostgreSQL pool:', err.message));
+  pool.on('error', err => console.error('❌ PostgreSQL pool:', err.message));
   try {
     await pool.query('SELECT 1');
     const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
@@ -82,9 +82,9 @@ async function initDatabase() {
     await repairLegacySchema();
     usePostgres = true;
     await ensureCeo();
-    console.log(' PostgreSQL conectado e schema aplicado.');
+    console.log('✅ PostgreSQL conectado e schema aplicado.');
   } catch (err) {
-    console.error(' PostgreSQL/schema indisponível:', err.message);
+    console.error('❌ PostgreSQL/schema indisponível:', err.message);
     try { await pool.end(); } catch {}
     pool = null;
     usePostgres = false;
@@ -111,8 +111,6 @@ async function repairLegacySchema() {
       ADD COLUMN IF NOT EXISTS avatar JSONB NOT NULL DEFAULT '{}'::jsonb,
       ADD COLUMN IF NOT EXISTS settings JSONB NOT NULL DEFAULT '{}'::jsonb,
       ADD COLUMN IF NOT EXISTS bio VARCHAR(180) NOT NULL DEFAULT '',
-      ADD COLUMN IF NOT EXISTS username VARCHAR(50),
-      ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255),
       ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 
     ALTER TABLE user_inventory
@@ -133,10 +131,11 @@ async function repairLegacySchema() {
     ALTER TABLE player_market
       ADD COLUMN IF NOT EXISTS sold_at TIMESTAMP;
 
-    ALTER TABLE profiles ALTER COLUMN password_hash DROP NOT NULL;
-
-    UPDATE profiles p SET user_id = u.id, username = u.username FROM users u WHERE p.user_id IS NULL AND lower(COALESCE(p.username,'')) = lower(u.username);
-    UPDATE profiles p SET username = u.username FROM users u WHERE p.user_id = u.id AND (p.username IS NULL OR p.username='');
+    UPDATE profiles p
+       SET user_id = u.id
+      FROM users u
+     WHERE p.user_id IS NULL
+       AND lower(p.username) = lower(u.username);
 
     UPDATE profiles p
        SET avatar = COALESCE(p.avatar, '{}'::jsonb),
@@ -157,20 +156,68 @@ async function repairLegacySchema() {
 
   // Perfis novos não dependem de uma linha pré-existente. O registro/login
   // cria o perfil automaticamente.
-  console.log(' Compatibilidade do PostgreSQL verificada/corrigida.');
+  console.log('🛠️ Compatibilidade do PostgreSQL verificada/corrigida.');
 }
 
-async function ensureCeo(){
-  if(!pool)return;
-  const password=String(process.env.CEO_INITIAL_PASSWORD||'').trim();
-  const found=await pool.query("SELECT id,username,role FROM users WHERE LOWER(username)='ceovelho' LIMIT 1");
-  if(found.rows.length){if(found.rows[0].role!=='CEO')await pool.query("UPDATE users SET role='CEO' WHERE id=$1",[found.rows[0].id]);return;}
-  if(!password){console.warn('CeoVelho não existe. Defina CEO_INITIAL_PASSWORD no Render para criar apenas a conta CEO, sem apagar nenhuma conta existente.');return;}
-  const hash=await bcrypt.hash(password,12);
-  await pool.query("INSERT INTO users(username,password_hash,role,coins,xp,level) VALUES('CeoVelho',$1,'CEO',999999999,9999999,100)",[hash]);
-  console.log('Conta CeoVelho criada. Nenhuma conta existente foi apagada.');
-}
+async function ensureCeo() {
+  if (!pool) return;
+  const password = String(process.env.CEO_INITIAL_PASSWORD || '').trim();
+  const resetMarker = 'ceo_account_reset_v1';
 
+  // O primeiro bootstrap, quando CEO_INITIAL_PASSWORD estiver definido no Render,
+  // limpa contas antigas uma única vez e deixa somente o CEO de teste solicitado.
+  const marker = await pool.query('SELECT key FROM app_bootstrap WHERE key=$1 LIMIT 1', [resetMarker]);
+  if (!marker.rows.length) {
+    if (!password) {
+      throw new Error('CEO_INITIAL_PASSWORD não definido. Configure no Render para concluir o bootstrap do CeoVelho.');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM users WHERE LOWER(username) <> LOWER($1)', ['CeoVelho']);
+
+      const hash = await bcrypt.hash(password, 12);
+      const existing = await client.query("SELECT id FROM users WHERE LOWER(username)=LOWER('CeoVelho') LIMIT 1");
+      if (existing.rows.length) {
+        await client.query(
+          "UPDATE users SET username='CeoVelho', password_hash=$1, role='CEO', coins=9999999999999999, xp=999999999999, level=250 WHERE id=$2",
+          [hash, existing.rows[0].id]
+        );
+      } else {
+        await client.query(
+          "INSERT INTO users(username,password_hash,role,coins,xp,level) VALUES('CeoVelho',$1,'CEO',9999999999999999,999999999999,250)",
+          [hash]
+        );
+      }
+      await client.query('INSERT INTO app_bootstrap(key) VALUES($1)', [resetMarker]);
+      await client.query('COMMIT');
+      console.log('👑 Bootstrap concluído: somente CeoVelho foi mantido/criado.');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    return;
+  }
+
+  // Em deploys seguintes não apaga contas nem altera dados do jogo.
+  const found = await pool.query("SELECT id, username, role FROM users WHERE LOWER(username)='ceovelho' LIMIT 1");
+  if (!found.rows.length) {
+    if (!password) throw new Error('CeoVelho não existe e CEO_INITIAL_PASSWORD não está definido.');
+    const hash = await bcrypt.hash(password, 12);
+    await pool.query("INSERT INTO users(username,password_hash,role,coins,xp,level) VALUES('CeoVelho',$1,'CEO',9999999999999999,999999999999,250)", [hash]);
+    console.log('👑 Conta CeoVelho recriada.');
+  } else {
+    if (password) {
+      const hash = await bcrypt.hash(password, 12);
+      await pool.query("UPDATE users SET username='CeoVelho',password_hash=$1,role='CEO',coins=9999999999999999,level=250 WHERE id=$2", [hash, found.rows[0].id]);
+    } else {
+      await pool.query("UPDATE users SET role='CEO',coins=9999999999999999,level=250 WHERE id=$1", [found.rows[0].id]);
+    }
+  }
+}
 function parseCookies(req) {
   const raw = req.headers.cookie || '';
   const out = {};
@@ -211,7 +258,7 @@ async function auth(req, res, next) {
   const user = await getUserById(payload.id);
   if (!user) return res.status(401).json({ success:false, message:'Conta não encontrada.' });
   const moderation = await activeModeration(user.id);
-  if (moderation?.action === 'ban') return res.status(403).json({ success:false, message:'Sua conta está suspensa.', ban: moderation });
+  if (moderation?.action === 'ban' || moderation?.action === 'suspend') return res.status(403).json({ success:false, message:moderation.action==='ban'?'Sua conta foi banida.':'Sua conta está suspensa.', ban: moderation });
   req.user = user;
   next();
 }
@@ -219,7 +266,8 @@ function requireRole(...roles) { return (req,res,next) => roles.includes(req.use
 function cleanText(value, max=500) { return String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'').trim().slice(0,max); }
 function validUsername(v) { return /^[A-Za-z0-9_]{3,24}$/.test(v); }
 function xpForLevel(level) { return Math.floor(100 * Math.pow(level - 1, 1.45)); }
-function levelForXp(xp) { let level=1; while(level<100 && xp >= xpForLevel(level+1)) level++; return level; }
+function levelForXp(xp) { let level=1; while(level<250 && xp >= xpForLevel(level+1)) level++; return level; }
+function prestigeForLevel(level){return Math.max(0,Math.min(5,Math.floor(Math.max(0,Number(level||1)-1)/50)));}
 function publicUser(u) { return { id:u.id, username:u.username, role:u.role, coins:Number(u.coins||0), xp:Number(u.xp||0), level:Number(u.level||1), wins:Number(u.wins||0), losses:Number(u.losses||0), gamesPlayed:Number(u.games_played||0) }; }
 function defaultAvatar() { return { skinColor:'#d59b76', eyes:'#1d2433', hair:'hair_basic', hairColor:'#171717', top:'shirt_basic', bottom:'pants_basic', shoes:'shoes_basic', accessory:null, effect:null, emote:'emote_wave', title:'title_beginner' }; }
 function defaultSettings() { return { music:true, musicVolume:0.45, sfx:true, sfxVolume:0.75, animations:true, chatWorld:true, chatRoom:true, chatPrivate:true, reducedMotion:false }; }
@@ -240,7 +288,7 @@ async function saveProfile(userId, profile) {
 }
 async function activeModeration(userId) {
   if (!usePostgres) return null;
-  const r=await pool.query(`SELECT action,reason,expires_at FROM moderation_actions WHERE target_id=$1 AND action IN ('ban','mute') AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) ORDER BY created_at DESC LIMIT 1`,[userId]);
+  const r=await pool.query(`SELECT action,reason,expires_at FROM moderation_actions WHERE target_id=$1 AND action IN ('ban','mute','suspend') AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) ORDER BY created_at DESC LIMIT 1`,[userId]);
   return r.rows[0]||null;
 }
 async function logAdmin(actorId,command,args,result='ok') { if(usePostgres) await pool.query('INSERT INTO admin_logs(actor_id,command,arguments,result) VALUES($1,$2,$3,$4)',[actorId,command,cleanText(args,500),result]); }
@@ -262,7 +310,7 @@ async function hasItem(userId,itemId) {
   if(usePostgres){const r=await pool.query('SELECT 1 FROM user_inventory WHERE user_id=$1 AND item_id=$2',[userId,itemId]); return !!r.rows.length;}
   const db=localDb(); return !!db.inventory[userId]?.[itemId];
 }
-async function getItemsForUser(user) { if(usePostgres){try{const r=await pool.query("SELECT * FROM items WHERE is_active=true AND ($1=true OR COALESCE((asset->>'ceoOnly')::boolean,false)=false) ORDER BY category,price,id",[user?.role==='CEO']); return r.rows;}catch(e){console.error('items:',e.message);return [];} } return []; }
+async function getItems() { if(usePostgres){try{const r=await pool.query('SELECT * FROM items WHERE is_active=true ORDER BY category,price,id'); return r.rows;}catch(e){console.error('items:',e.message);return [];} } return []; }
 async function getInventory(userId) { if(usePostgres){try{const r=await pool.query(`SELECT i.*,ui.quantity,ui.acquired_at FROM user_inventory ui JOIN items i ON i.id=ui.item_id WHERE ui.user_id=$1 ORDER BY i.category,i.name`,[userId]); return r.rows;}catch(e){console.error('inventory:',e.message);return [];} } const db=localDb(); return Object.entries(db.inventory[userId]||{}).map(([item_id,quantity])=>({id:item_id,quantity})); }
 
 async function geminiModerate(text){
@@ -300,7 +348,7 @@ async function requireDatabase(req,res,next){
     if(databaseReady)return next();
     return res.status(503).json({success:false,message:'Servidor ainda está inicializando. Tente novamente em alguns segundos.'});
   }catch(err){
-    console.error(' Banco não pronto:',err.message);
+    console.error('❌ Banco não pronto:',err.message);
     return res.status(503).json({success:false,message:'Banco de dados temporariamente indisponível.'});
   }
 }
@@ -353,14 +401,13 @@ app.put('/api/profile',auth,async(req,res)=>{try{const avatar=req.body.avatar||{
 app.post('/api/game/solo-finish',auth,async(req,res)=>{
   const win=Boolean(req.body.win);
   const coins=Math.min(1000,Math.max(0,Math.floor(Number(req.body.coins)||0)));
-  const xp=Math.min(5000,Math.max(0,Math.floor(Number(req.body.xp)||0)));const mode=['solo','duo','trio'].includes(String(req.body.mode||'solo'))?String(req.body.mode):'solo';
+  const xp=Math.min(5000,Math.max(0,Math.floor(Number(req.body.xp)||0)));
   try {
     if(usePostgres){
       const r=await pool.query('UPDATE users SET coins=coins+$1,xp=xp+$2,wins=wins+$3,losses=losses+$4,games_played=games_played+1 WHERE id=$5 RETURNING *',[coins,xp,win?1:0,win?0:1,req.user.id]);
       const u=r.rows[0];
       const lvl=levelForXp(Number(u.xp||0));
       const rr=await pool.query('UPDATE users SET level=$1 WHERE id=$2 RETURNING id,username,role,coins,xp,level,wins,losses,games_played',[lvl,req.user.id]);
-      const matchId=crypto.randomUUID();await pool.query('INSERT INTO matches(id,mode,difficulty,map_id,winner_user_id,ended_at) VALUES($1,$2,$3,$4,$5,CURRENT_TIMESTAMP)',[matchId,mode,'classic','map_saloon',win?req.user.id:null]);await pool.query('INSERT INTO match_players(match_id,user_id,username_snapshot,result,coins_earned,xp_earned) VALUES($1,$2,$3,$4,$5,$6)',[matchId,req.user.id,req.user.username,win?'win':'loss',coins,xp]);
       return res.json({success:true,user:publicUser(rr.rows[0]||u)});
     }
     const u=await addEconomy(req.user.id,coins,xp);
@@ -369,48 +416,148 @@ app.post('/api/game/solo-finish',auth,async(req,res)=>{
   } catch(e){console.error(e);res.status(500).json({success:false,message:'Não foi possível salvar a recompensa.'});}
 });
 app.get('/api/inventory',auth,async(req,res)=>res.json({success:true,items:await getInventory(req.user.id)}));
-app.get('/api/items',auth,async(req,res)=>res.json({success:true,items:await getItemsForUser(req.user)}));
+app.get('/api/items',async(req,res)=>res.json({success:true,items:await getItems()}));
+const EVENT_REWARDS=[
+  {level:10,itemId:'event_egypt_scarab',name:'Escaravelho do Nilo',description:'Acessório exclusivo do evento.',image:'assets/shop/egypt-scarab.svg'},
+  {level:25,itemId:'event_egypt_amulet',name:'Amuleto do Nilo',description:'Amuleto exclusivo do evento.',image:'assets/shop/egypt-amulet.svg'},
+  {level:35,itemId:'event_egypt_headpiece',name:'Adorno Real do Egito',description:'Adorno exclusivo do evento.',image:'assets/shop/egypt-headpiece.svg'},
+  {level:45,itemId:'event_egypt_collar',name:'Gola Dourada do Faraó',description:'Gola exclusiva do evento.',image:'assets/shop/egypt-collar.svg'},
+  {level:50,itemId:'event_egypt_crown',name:'Coroa do Faraó',description:'Recompensa lendária exclusiva — não pode ser vendida.',image:'assets/shop/pharaoh-crown.svg'},
+  {level:75,itemId:'event_egypt_wings',name:'Asas do Sol de Rá',description:'Efeito lendário exclusivo do evento.',image:'assets/shop/egypt-wings.svg'},
+  {level:100,itemId:'event_egypt_staff',name:'Cajado Solar de Rá',description:'Recompensa final exclusiva do evento.',image:'assets/shop/egypt-staff.svg'}
+];
+app.get('/api/event/current',auth,async(req,res)=>{try{const u=await getUserById(req.user.id);const level=Math.min(100,Number(u.level||1));const base=xpForLevel(Math.max(1,level));const next=xpForLevel(Math.min(250,level+1));const progress=level>=100?100:Math.max(0,Math.min(100,Math.round(((Number(u.xp||0)-base)/Math.max(1,next-base))*100)));let claimed=[];if(usePostgres){const r=await pool.query("SELECT item_id FROM user_event_rewards WHERE user_id=$1 AND event_id='egypt_pass_1'",[req.user.id]);claimed=r.rows.map(x=>x.item_id);}res.json({success:true,event:{id:'egypt_pass_1',name:'Egito Antigo — Passe 1'},level,xp:Number(u.xp||0),progress,rewards:EVENT_REWARDS.map(r=>({...r,claimed:claimed.includes(r.itemId)}))});}catch(e){console.error('event',e);res.status(500).json({success:false,message:'Evento indisponível.'});}});
+app.post('/api/event/claim',auth,async(req,res)=>{const itemId=cleanText(req.body.itemId,80);const reward=EVENT_REWARDS.find(r=>r.itemId===itemId);if(!reward)return res.status(404).json({success:false,message:'Recompensa não encontrada.'});const u=await getUserById(req.user.id);if(Number(u.level||1)<reward.level)return res.status(403).json({success:false,message:`Chegue ao nível ${reward.level} para resgatar.`});if(!usePostgres)return res.json({success:true,message:'Recompensa resgatada!'});try{await pool.query('BEGIN');const exists=await pool.query("SELECT 1 FROM user_event_rewards WHERE user_id=$1 AND event_id='egypt_pass_1' AND item_id=$2",[req.user.id,itemId]);if(exists.rows.length){await pool.query('ROLLBACK');return res.status(409).json({success:false,message:'Recompensa já resgatada.'});}await grantItem(req.user.id,itemId);await pool.query("INSERT INTO user_event_rewards(user_id,event_id,item_id) VALUES($1,'egypt_pass_1',$2)",[req.user.id,itemId]);await pool.query('COMMIT');res.json({success:true,message:`${reward.name} resgatado!`});}catch(e){try{await pool.query('ROLLBACK')}catch{}res.status(500).json({success:false,message:'Não foi possível resgatar a recompensa.'});}});
 
 app.get('/api/shop/market',auth,async(req,res)=>{if(!usePostgres)return res.json({success:true,listings:[]});const r=await pool.query(`SELECT m.listing_id,m.price,m.created_at,i.*,u.username seller FROM player_market m JOIN items i ON i.id=m.item_id JOIN users u ON u.id=m.seller_id WHERE m.status='active' ORDER BY m.created_at DESC LIMIT 100`);res.json({success:true,listings:r.rows});});
 app.post('/api/shop/buy',auth,async(req,res)=>{
   const itemId=cleanText(req.body.itemId,80);if(!usePostgres)return res.status(503).json({success:false,message:'Loja online exige PostgreSQL.'});
-  const client=await pool.connect();try{await client.query('BEGIN');const item=(await client.query('SELECT * FROM items WHERE id=$1 AND is_active=true FOR UPDATE',[itemId])).rows[0];if(!item)throw new Error('Item não encontrado.');if(item.asset?.ceoOnly&&req.user.role!=='CEO')throw new Error('Item exclusivo do CEO.');const own=await client.query('SELECT 1 FROM user_inventory WHERE user_id=$1 AND item_id=$2',[req.user.id,itemId]);if(own.rows.length)throw new Error('Você já possui este item.');const buyer=(await client.query('SELECT coins,xp FROM users WHERE id=$1 FOR UPDATE',[req.user.id])).rows[0];if(Number(buyer.xp)<Number(item.xp_required))throw new Error(`Você precisa de ${item.xp_required} XP.`);if(Number(buyer.coins)<Number(item.price))throw new Error('Moedas insuficientes.');await client.query('UPDATE users SET coins=coins-$1 WHERE id=$2',[item.price,req.user.id]);await client.query('INSERT INTO user_inventory(user_id,item_id) VALUES($1,$2)',[req.user.id,itemId]);await client.query('COMMIT');res.json({success:true,message:'Item desbloqueado!',item});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}
+  const client=await pool.connect();try{await client.query('BEGIN');const item=(await client.query('SELECT * FROM items WHERE id=$1 AND is_active=true FOR UPDATE',[itemId])).rows[0];if(!item)throw new Error('Item não encontrado.');if(item.asset?.ceoOnly&&req.user.role!=='CEO')throw new Error('Item exclusivo do CEO.');const own=await client.query('SELECT 1 FROM user_inventory WHERE user_id=$1 AND item_id=$2',[req.user.id,itemId]);if(own.rows.length)throw new Error('Você já possui este item.');const buyer=(await client.query('SELECT coins,xp FROM users WHERE id=$1 FOR UPDATE',[req.user.id])).rows[0];if(Number(buyer.xp)<Number(item.xp_required))throw new Error(`Você precisa de ${item.xp_required} XP.`);if(String(req.user.role).toUpperCase()!=='CEO'&&Number(buyer.coins)<Number(item.price))throw new Error('Moedas insuficientes.');if(String(req.user.role).toUpperCase()!=='CEO')await client.query('UPDATE users SET coins=coins-$1 WHERE id=$2',[item.price,req.user.id]);await client.query('INSERT INTO user_inventory(user_id,item_id) VALUES($1,$2)',[req.user.id,itemId]);await client.query('COMMIT');res.json({success:true,message:'Item desbloqueado!',item});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}
 });
-app.post('/api/shop/market/list',auth,async(req,res)=>{if(!usePostgres)return res.status(503).json({success:false,message:'Loja de jogadores exige PostgreSQL.'});const itemId=cleanText(req.body.itemId,80);const price=Math.floor(Number(req.body.price));if(!itemId||!Number.isFinite(price)||price<10||price>100000000)return res.status(400).json({success:false,message:'Preço inválido.'});const client=await pool.connect();try{await client.query('BEGIN');const own=(await client.query('SELECT quantity FROM user_inventory WHERE user_id=$1 AND item_id=$2 FOR UPDATE',[req.user.id,itemId])).rows[0];if(!own)throw new Error('Você não possui o item.');const active=await client.query("SELECT 1 FROM player_market WHERE seller_id=$1 AND item_id=$2 AND status='active'",[req.user.id,itemId]);if(active.rows.length)throw new Error('Esse item já está anunciado.');await client.query('DELETE FROM user_inventory WHERE user_id=$1 AND item_id=$2',[req.user.id,itemId]);const r=await client.query("INSERT INTO player_market(seller_id,item_id,price) VALUES($1,$2,$3) RETURNING *",[req.user.id,itemId,price]);await client.query('COMMIT');res.json({success:true,listing:r.rows[0]});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}});
+app.post('/api/shop/market/list',auth,async(req,res)=>{if(!usePostgres)return res.status(503).json({success:false,message:'Loja de jogadores exige PostgreSQL.'});const itemId=cleanText(req.body.itemId,80);const price=Math.floor(Number(req.body.price));if(!itemId||!Number.isFinite(price)||price<10||price>100000000)return res.status(400).json({success:false,message:'Preço inválido.'});const client=await pool.connect();try{await client.query('BEGIN');const own=(await client.query('SELECT quantity FROM user_inventory WHERE user_id=$1 AND item_id=$2 FOR UPDATE',[req.user.id,itemId])).rows[0];if(!own)throw new Error('Você não possui o item.');const itemRow=(await client.query('SELECT asset FROM items WHERE id=$1',[itemId])).rows[0];if(itemRow?.asset?.unsellable)throw new Error('Este item é exclusivo de evento e não pode ser vendido.');const active=await client.query("SELECT 1 FROM player_market WHERE seller_id=$1 AND item_id=$2 AND status='active'",[req.user.id,itemId]);if(active.rows.length)throw new Error('Esse item já está anunciado.');await client.query('DELETE FROM user_inventory WHERE user_id=$1 AND item_id=$2',[req.user.id,itemId]);const r=await client.query("INSERT INTO player_market(seller_id,item_id,price) VALUES($1,$2,$3) RETURNING *",[req.user.id,itemId,price]);await client.query('COMMIT');res.json({success:true,listing:r.rows[0]});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}});
 app.post('/api/shop/market/cancel',auth,async(req,res)=>{if(!usePostgres)return res.status(503).json({success:false,message:'Loja de jogadores exige PostgreSQL.'});const listingId=Number(req.body.listingId);const client=await pool.connect();try{await client.query('BEGIN');const l=(await client.query("SELECT * FROM player_market WHERE listing_id=$1 AND seller_id=$2 AND status='active' FOR UPDATE",[listingId,req.user.id])).rows[0];if(!l)throw new Error('Anúncio não encontrado.');await client.query("UPDATE player_market SET status='cancelled' WHERE listing_id=$1",[listingId]);await client.query('INSERT INTO user_inventory(user_id,item_id) VALUES($1,$2) ON CONFLICT(user_id,item_id) DO UPDATE SET quantity=user_inventory.quantity+1',[req.user.id,l.item_id]);await client.query('COMMIT');res.json({success:true,message:'Anúncio cancelado e item devolvido.'});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}});
 app.post('/api/shop/market/buy',auth,async(req,res)=>{if(!usePostgres)return res.status(503).json({success:false,message:'Loja de jogadores exige PostgreSQL.'});const listingId=Number(req.body.listingId);const client=await pool.connect();try{await client.query('BEGIN');const l=(await client.query("SELECT m.*,i.name,i.asset FROM player_market m JOIN items i ON i.id=m.item_id WHERE m.listing_id=$1 AND m.status='active' FOR UPDATE",[listingId])).rows[0];if(!l)throw new Error('Anúncio não encontrado.');if(l.seller_id===req.user.id)throw new Error('Você não pode comprar seu próprio anúncio.');const buyer=(await client.query('SELECT coins FROM users WHERE id=$1 FOR UPDATE',[req.user.id])).rows[0];if(Number(buyer.coins)<Number(l.price))throw new Error('Moedas insuficientes.');const seller=(await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE',[l.seller_id])).rows[0];if(!seller)throw new Error('Vendedor não encontrado.');await client.query('UPDATE users SET coins=coins-$1 WHERE id=$2',[l.price,req.user.id]);await client.query('UPDATE users SET coins=coins+$1 WHERE id=$2',[l.price,l.seller_id]);await client.query('DELETE FROM user_inventory WHERE user_id=$1 AND item_id=$2',[l.seller_id,l.item_id]);await client.query('INSERT INTO user_inventory(user_id,item_id) VALUES($1,$2) ON CONFLICT(user_id,item_id) DO UPDATE SET quantity=user_inventory.quantity+1',[req.user.id,l.item_id]);await client.query("UPDATE player_market SET status='sold',sold_at=CURRENT_TIMESTAMP WHERE listing_id=$1",[listingId]);await client.query('COMMIT');res.json({success:true,message:'Compra concluída!'});}catch(e){await client.query('ROLLBACK');res.status(400).json({success:false,message:e.message});}finally{client.release();}});
 
-app.get('/api/history',auth,async(req,res)=>{if(!usePostgres)return res.json({success:true,matches:[]});const r=await pool.query(`SELECT m.id,m.mode,m.started_at,m.ended_at,mp.result,mp.coins_earned,mp.xp_earned FROM match_players mp JOIN matches m ON m.id=mp.match_id WHERE mp.user_id=$1 ORDER BY m.started_at DESC LIMIT 100`,[req.user.id]);res.json({success:true,matches:r.rows.map(x=>({id:x.id,mode:x.mode,startedAt:x.started_at,endedAt:x.ended_at,result:x.result,coins:x.coins_earned,xp:x.xp_earned}))});});
-app.get('/api/stats',auth,async(req,res)=>{if(!usePostgres)return res.json({success:true,stats:{solo:0,duo:0,trio:0,wins:req.user.wins||0,gamesPlayed:req.user.games_played||0}});const r=await pool.query(`SELECT COUNT(*) FILTER (WHERE lower(mode)='solo') solo,COUNT(*) FILTER (WHERE lower(mode)='duo') duo,COUNT(*) FILTER (WHERE lower(mode)='trio') trio,COUNT(*) games,COUNT(*) FILTER (WHERE result='win') wins FROM match_players WHERE user_id=$1`,[req.user.id]);const row=r.rows[0]||{};res.json({success:true,stats:{solo:Number(row.solo||0),duo:Number(row.duo||0),trio:Number(row.trio||0),wins:Number(row.wins||0),gamesPlayed:Number(row.games||req.user.games_played||0)}});});
-app.get('/api/ceo/player',auth,requireRole('CEO'),async(req,res)=>{const name=cleanText(req.query.username,24);const r=await pool.query('SELECT id,username,role,coins,xp,level,wins,games_played FROM users WHERE LOWER(username)=LOWER($1) LIMIT 1',[name]);res.json({success:true,player:r.rows[0]?publicUser(r.rows[0]):null});});
-let seasonState={number:1,days:30,startsAt:Date.now(),endsAt:Date.now()+30*86400000};
-app.get('/api/ceo/season',auth,requireRole('CEO'),async(req,res)=>{if(usePostgres){const r=await pool.query("SELECT season_number,starts_at,ends_at,EXTRACT(EPOCH FROM (ends_at-starts_at))/86400 AS days FROM game_season WHERE id=1");if(r.rows[0])return res.json({success:true,season:{number:Number(r.rows[0].season_number),days:Number(r.rows[0].days),startsAt:r.rows[0].starts_at,endsAt:r.rows[0].ends_at}});}res.json({success:true,season:seasonState});});
-app.post('/api/ceo/season',auth,requireRole('CEO'),async(req,res)=>{const days=Math.max(1,Math.min(3650,Math.floor(Number(req.body.days)||30)));const number=seasonState.number+1;const starts=new Date();const ends=new Date(starts.getTime()+days*86400000);seasonState={number,days,startsAt:starts.getTime(),endsAt:ends.getTime()};if(usePostgres)await pool.query("UPDATE game_season SET season_number=$1,starts_at=$2,ends_at=$3 WHERE id=1",[number,starts,ends]);res.json({success:true,message:`Temporada ${number} configurada.`,season:seasonState});});
-app.post('/api/ceo/player/action',auth,requireRole('CEO'),async(req,res)=>{const username=cleanText(req.body.username,24);const action=cleanText(req.body.action,40);if(!username)return res.status(400).json({success:false,message:'Jogador não informado.'});const r=await pool.query('SELECT id,username,role FROM users WHERE LOWER(username)=LOWER($1) LIMIT 1',[username]);const target=r.rows[0];if(!target)return res.status(404).json({success:false,message:'Jogador não encontrado.'});if(String(target.role).toUpperCase()==='CEO')return res.status(403).json({success:false,message:'A conta CEO não pode ser alterada por esta área.'});if(action==='clear_inventory'){await pool.query('DELETE FROM user_inventory WHERE user_id=$1',[target.id]);return res.json({success:true,message:'Inventário limpo.'});}if(action==='clear_xp'){await pool.query('UPDATE users SET xp=0,level=1 WHERE id=$1',[target.id]);return res.json({success:true,message:'XP zerado.'});}if(action==='clear_coins'){await pool.query('UPDATE users SET coins=0 WHERE id=$1',[target.id]);return res.json({success:true,message:'Moedas zeradas.'});}if(action==='ban'){await pool.query("INSERT INTO moderation_actions(actor_id,target_id,action,reason,expires_at) VALUES($1,$2,'ban',$3,NULL)",[req.user.id,target.id,'Banimento pelo CEO']);for(const [sid,u] of socketUsers)if(Number(u.userId)===Number(target.id))io.to(sid).emit('admin:kick',{message:'Sua conta foi suspensa.'});return res.json({success:true,message:'Jogador banido.'});}return res.status(400).json({success:false,message:'Ação inválida.'});});
-app.post('/api/ceo/command',auth,requireRole('CEO'),async(req,res)=>{const command=cleanText(req.body.command,500);const result=await executeAdminCommand(req.user,command);res.status(result.ok?200:400).json({success:result.ok,message:result.message});});
-
-app.get('/api/rank',async(req,res)=>{if(!usePostgres)return res.json({success:true,players:[]});const r=await pool.query(`SELECT username,level,xp,wins,games_played FROM users WHERE role<>'banned' ORDER BY level DESC,xp DESC,wins DESC LIMIT 100`);res.json({success:true,players:r.rows});});
+app.get('/api/rank',async(req,res)=>{if(!usePostgres)return res.json({success:true,players:[]});const r=await pool.query(`SELECT username,level,xp,wins,games_played,podium_position FROM users WHERE role NOT IN ('banned','CEO') AND LOWER(username)<>'ceovelho' ORDER BY podium_position NULLS LAST,podium_position ASC,level DESC,xp DESC,wins DESC LIMIT 100`);res.json({success:true,players:r.rows});});
 app.post('/api/report',auth,async(req,res)=>{if(!usePostgres)return res.json({success:true});const target=Number(req.body.targetId);const reason=cleanText(req.body.reason,255);if(!target||!reason)return res.status(400).json({success:false,message:'Denúncia incompleta.'});await pool.query('INSERT INTO reports(reporter_id,target_id,reason) VALUES($1,$2,$3)',[req.user.id,target,reason]);res.json({success:true,message:'Denúncia enviada.'});});
 
+
+function requireCeoRoute(req,res,next){if(String(req.user?.username).toLowerCase()!=='ceovelho'||String(req.user?.role||'').toUpperCase()!=='CEO')return res.status(403).json({success:false,message:'Central exclusiva do CEO.'});next();}
+app.get('/api/history',auth,async(req,res)=>{
+  if(!usePostgres)return res.json({success:true,stats:{games:req.user.games_played||0,wins:req.user.wins||0,losses:req.user.losses||0,winRate:req.user.games_played?Math.round((req.user.wins/req.user.games_played)*100):0},matches:[]});
+  try{
+    const stats=(await pool.query('SELECT games_played,wins,losses FROM users WHERE id=$1',[req.user.id])).rows[0]||req.user;
+    const rows=(await pool.query(`SELECT m.id,m.mode,m.map_id,m.started_at,m.ended_at,mp.result FROM matches m JOIN match_players mp ON mp.match_id=m.id WHERE mp.user_id=$1 ORDER BY m.started_at DESC LIMIT 30`,[req.user.id])).rows;
+    res.json({success:true,stats:{games:Number(stats.games_played||0),wins:Number(stats.wins||0),losses:Number(stats.losses||0),winRate:stats.games_played?Math.round((Number(stats.wins||0)/Number(stats.games_played))*100):0},matches:rows.map(x=>({mode:x.mode,mapId:x.map_id,startedAt:x.started_at,result:x.result||'PARTIDA'}))});
+  }catch(e){console.error('history',e);res.status(500).json({success:false,message:'Não foi possível carregar o histórico.'});}
+});
+app.get('/api/admin/status',auth,requireCeoRoute,async(req,res)=>{
+  res.json({success:true,online:socketUsers.size,matches:[...rooms.values()].filter(r=>r.started).length,paused:!!globalState.paused,turnSeconds:Number(globalState.turn_seconds||45),season:{name:globalState.season_name||'Temporada 01',number:Number(globalState.season_number||1)}});
+});
+app.get('/api/admin/players',auth,requireCeoRoute,async(req,res)=>{
+  const q=cleanText(req.query.q,50);
+  if(!usePostgres)return res.json({success:true,players:localDb().users.filter(u=>!q||u.username.toLowerCase().includes(q.toLowerCase())).slice(0,50).map(u=>({id:u.id,username:u.username,role:u.role,level:u.level,xp:u.xp,coins:u.coins}))});
+  const r=await pool.query(`SELECT id,username,role,level,xp,coins,wins,losses,games_played FROM users WHERE LOWER(username) LIKE LOWER($1) ORDER BY username LIMIT 50`,[`%${q}%`]);
+  res.json({success:true,players:r.rows});
+});
+app.get('/api/admin/matches',auth,requireCeoRoute,async(req,res)=>{
+  res.json({success:true,matches:[...rooms.values()].filter(r=>r.started).map(r=>({code:r.code,name:r.name,players:r.players.map(p=>p.username),startedAt:r.game?.startedAt||r.createdAt,turnSeconds:r.options.turnSeconds}))});
+});
+app.get('/api/admin/reports',auth,requireCeoRoute,async(req,res)=>{
+  if(!usePostgres)return res.json({success:true,reports:[]});
+  const r=await pool.query(`SELECT r.id,r.reason,r.status,r.created_at,u.username target_name,ru.username reporter_name FROM reports r LEFT JOIN users u ON u.id=r.target_id LEFT JOIN users ru ON ru.id=r.reporter_id WHERE r.status='open' ORDER BY r.created_at DESC LIMIT 100`);
+  res.json({success:true,reports:r.rows.map(x=>({id:x.id,reason:x.reason,status:x.status,targetName:x.target_name,reporterName:x.reporter_name,createdAt:x.created_at}))});
+});
+app.post('/api/admin/player/clear-inventory',auth,requireCeoRoute,async(req,res)=>{
+  const id=Number(req.body.userId);if(!id)return res.status(400).json({success:false,message:'Jogador inválido.'});
+  if(usePostgres)await pool.query('DELETE FROM user_inventory WHERE user_id=$1',[id]); else {const db=localDb();db.inventory[id]={};saveLocalDb(db);}
+  await logAdmin(req.user.id,'/ceo-clear-inventory',String(id));res.json({success:true,message:'Inventário limpo.'});
+});
+app.post('/api/admin/player/zero-coins',auth,requireCeoRoute,async(req,res)=>{
+  const id=Number(req.body.userId);if(!id)return res.status(400).json({success:false,message:'Jogador inválido.'});
+  if(usePostgres)await pool.query('UPDATE users SET coins=0 WHERE id=$1 AND LOWER(username)<>$2',[id,'ceovelho']); else {const db=localDb();const u=db.users.find(x=>x.id===id);if(u)u.coins=0;saveLocalDb(db);}
+  await logAdmin(req.user.id,'/ceo-zero-coins',String(id));res.json({success:true,message:'Ouro zerado.'});
+});
+app.post('/api/admin/player/zero-xp',auth,requireCeoRoute,async(req,res)=>{
+  const id=Number(req.body.userId);if(!id)return res.status(400).json({success:false,message:'Jogador inválido.'});
+  if(usePostgres)await pool.query('UPDATE users SET xp=0,level=1 WHERE id=$1 AND LOWER(username)<>$2',[id,'ceovelho']); else {const db=localDb();const u=db.users.find(x=>x.id===id);if(u){u.xp=0;u.level=1;}saveLocalDb(db);}
+  await logAdmin(req.user.id,'/ceo-zero-xp',String(id));res.json({success:true,message:'XP zerado.'});
+});
+app.post('/api/admin/player/suspend',auth,requireCeoRoute,async(req,res)=>{
+  const id=Number(req.body.userId),reason=cleanText(req.body.reason,255)||'Suspensão aplicada pelo CEO.';if(!id)return res.status(400).json({success:false,message:'Jogador inválido.'});
+  if(usePostgres)await pool.query(`INSERT INTO moderation_actions(actor_id,target_id,action,reason,expires_at) VALUES($1,$2,'suspend',$3,CURRENT_TIMESTAMP + INTERVAL '30 days')`,[req.user.id,id,reason]);
+  await logAdmin(req.user.id,'/ceo-suspend',`${id} ${reason}`);res.json({success:true,message:'Jogador suspenso com motivo.'});
+});
+app.post('/api/admin/player/ban',auth,requireCeoRoute,async(req,res)=>{
+  const id=Number(req.body.userId),reason=cleanText(req.body.reason,255)||'Banimento aplicado pelo CEO.';if(!id)return res.status(400).json({success:false,message:'Jogador inválido.'});
+  if(usePostgres)await pool.query(`INSERT INTO moderation_actions(actor_id,target_id,action,reason,expires_at) VALUES($1,$2,'ban',$3,NULL)`,[req.user.id,id,reason]);
+  for(const [sid,u] of socketUsers)if(Number(u.userId)===id)io.to(sid).emit('admin:kick',{message:'Sua conta foi banida pelo CEO.'});
+  await logAdmin(req.user.id,'/ceo-ban',`${id} ${reason}`);res.json({success:true,message:'Jogador banido.'});
+});
+app.post('/api/admin/duration',auth,requireCeoRoute,async(req,res)=>{
+  const seconds=Math.min(120,Math.max(15,Math.floor(Number(req.body.seconds)||45)));globalState.turn_seconds=seconds;
+  if(usePostgres)await pool.query('UPDATE global_game_state SET turn_seconds=$1,updated_by=$2,updated_at=CURRENT_TIMESTAMP WHERE id=1',[seconds,req.user.id]);
+  for(const r of rooms.values())r.options.turnSeconds=seconds;
+  await logAdmin(req.user.id,'/ceo-duration',String(seconds));res.json({success:true,message:`Duração alterada para ${seconds}s.`});
+});
+app.post('/api/admin/season/next',auth,requireCeoRoute,async(req,res)=>{
+  const name=cleanText(req.body.name,120)||`Temporada ${Number(globalState.season_number||1)+1}`;globalState.season_number=Number(globalState.season_number||1)+1;globalState.season_name=name;
+  if(usePostgres)await pool.query('UPDATE global_game_state SET season_number=$1,season_name=$2,updated_by=$3,updated_at=CURRENT_TIMESTAMP WHERE id=1',[globalState.season_number,name,req.user.id]);
+  await logAdmin(req.user.id,'/ceo-next-season',name);res.json({success:true,message:`Nova temporada: ${name}.`});
+});
+app.post('/api/admin/pause',auth,requireCeoRoute,async(req,res)=>{
+  globalState.paused=true;globalState.message=cleanText(req.body.message,500)||'Jogo paralisado pelo CEO.';
+  if(usePostgres)await pool.query('UPDATE global_game_state SET paused=true,message=$1,updated_by=$2,updated_at=CURRENT_TIMESTAMP WHERE id=1',[globalState.message,req.user.id]);
+  io.emit('global:pause',globalState);await logAdmin(req.user.id,'/paralisaruno',globalState.message);res.json({success:true,message:'Jogo paralisado.'});
+});
+app.post('/api/admin/resume',auth,requireCeoRoute,async(req,res)=>{
+  globalState.paused=false;globalState.message='';
+  if(usePostgres)await pool.query("UPDATE global_game_state SET paused=false,message='',updated_by=$1,updated_at=CURRENT_TIMESTAMP WHERE id=1",[req.user.id]);
+  io.emit('global:resume');await logAdmin(req.user.id,'/desparalisaruno','');res.json({success:true,message:'Jogo retomado.'});
+});
+app.post('/api/admin/podium',auth,requireCeoRoute,async(req,res)=>{
+  const username=cleanText(req.body.username,50),position=Math.min(3,Math.max(1,Number(req.body.position)||1));if(!username)return res.status(400).json({success:false,message:'Nome do jogador obrigatório.'});
+  if(usePostgres){await pool.query('UPDATE users SET podium_position=NULL WHERE podium_position=$1',[position]);const r=await pool.query(`UPDATE users SET podium_position=$1 WHERE LOWER(username)=LOWER($2) AND role NOT IN ('CEO','banned') RETURNING username`,[position,username]);if(!r.rows.length)return res.status(404).json({success:false,message:'Jogador não encontrado.'});}
+  await logAdmin(req.user.id,'/ceo-podium',`${username} ${position}`);res.json({success:true,message:`${username} colocado em ${position}º no pódio.`});
+});
+app.post('/api/admin/match/end',auth,requireCeoRoute,async(req,res)=>{
+  const code=cleanText(req.body.code,30).toUpperCase(),room=rooms.get(code);if(!room)return res.status(404).json({success:false,message:'Partida não encontrada.'});
+  io.to(`room:${code}`).emit('room:closed',{message:'Partida encerrada pelo CEO.'});rooms.delete(code);io.emit('rooms:update');await logAdmin(req.user.id,'/ceo-end-match',code);res.json({success:true,message:'Partida encerrada.'});
+});
 app.get('/api/rooms',auth,(req,res)=>{res.json({success:true,rooms:[...rooms.values()].filter(r=>!r.started&&!r.locked).map(roomSummary)});});
 app.post('/api/rooms',auth,async(req,res)=>{if(globalState.paused)return res.status(423).json({success:false,message:globalState.message||'O jogo está paralisado.'});const options=normalizeRoomOptions(req.body);const code=makeRoomCode();const room={code,name:cleanText(req.body.name||`Sala de ${req.user.username}`,40),ownerId:req.user.id,ownerName:req.user.username,password:cleanText(req.body.password,40),options,players:[],started:false,locked:false,game:null,createdAt:Date.now()};room.players.push(makeRoomPlayer(req.user));rooms.set(code,room);res.json({success:true,room:roomSummary(room),roomCode:code});});
 app.post('/api/rooms/:code/join',auth,async(req,res)=>{const room=rooms.get(req.params.code.toUpperCase());if(!room)return res.status(404).json({success:false,message:'Sala não encontrada.'});if(room.started)return res.status(409).json({success:false,message:'A partida já começou.'});if(room.players.length>=room.options.maxPlayers)return res.status(409).json({success:false,message:'Sala cheia.'});if(room.password&&room.password!==String(req.body.password||''))return res.status(403).json({success:false,message:'Senha incorreta.'});if(room.players.some(p=>p.userId===req.user.id))return res.json({success:true,room:roomSummary(room)});room.players.push(makeRoomPlayer(req.user));emitRoom(room);res.json({success:true,room:roomSummary(room)});});
 app.post('/api/rooms/:code/leave',auth,(req,res)=>{const room=rooms.get(req.params.code.toUpperCase());if(!room)return res.json({success:true});removePlayer(room,req.user.id);res.json({success:true});});
 app.post('/api/rooms/:code/start',auth,(req,res)=>{const room=rooms.get(req.params.code.toUpperCase());if(!room)return res.status(404).json({success:false,message:'Sala não encontrada.'});if(room.ownerId!==req.user.id)return res.status(403).json({success:false,message:'Somente o criador inicia a sala.'});if(room.players.length<2&&!room.options.allowBots)return res.status(400).json({success:false,message:'Adicione pelo menos 2 jogadores ou ative bots.'});if(globalState.paused)return res.status(423).json({success:false,message:globalState.message||'Jogo paralisado.'});while(room.players.length<room.options.maxPlayers&&room.options.allowBots&&room.players.length<room.options.botFill)room.players.push(makeBotPlayer(room.players.length));startRoomGame(room);res.json({success:true,room:roomSummary(room)});});
 
-function normalizeRoomOptions(body){return {maxPlayers:Math.min(8,Math.max(2,Number(body.maxPlayers)||4)),turnSeconds:Math.min(20,Math.max(10,Number(body.turnSeconds)||20)),allowBots:body.allowBots!==false,botFill:Math.min(8,Math.max(2,Number(body.botFill)||4)),difficulty:'classic',mapId:cleanText(body.mapId||'map_saloon',80),deckId:cleanText(body.deckId||'deck_classic',80),specials:body.specials!==false,chat:body.chat!==false,worldChat:body.worldChat!==false,privateChat:body.privateChat!==false,stackDraw:body.stackDraw===true,startingCards:Math.min(12,Math.max(5,Number(body.startingCards)||7))};}
+function normalizeRoomOptions(body){return {maxPlayers:Math.min(8,Math.max(2,Number(body.maxPlayers)||4)),turnSeconds:Math.min(120,Math.max(15,Number(body.turnSeconds)||Number(globalState.turn_seconds)||45)),allowBots:body.allowBots!==false,botFill:Math.min(8,Math.max(2,Number(body.botFill)||4)),difficulty:['easy','medium','hard'].includes(body.difficulty)?body.difficulty:'medium',mapId:cleanText(body.mapId||'map_saloon',80),deckId:cleanText(body.deckId||'deck_classic',80),mode:['solo','duo','trio','online'].includes(body.mode)?body.mode:'online',specials:body.specials!==false,math:false,chat:body.chat!==false,worldChat:body.worldChat!==false,privateChat:body.privateChat!==false,stackDraw:body.stackDraw===true,startingCards:Math.min(12,Math.max(5,Number(body.startingCards)||7))};}
 function makeRoomCode(){let c;do{c='MATX-'+Math.random().toString(36).slice(2,6).toUpperCase();}while(rooms.has(c));return c;}
-function makeRoomPlayer(user){return {userId:user.id,username:user.username,role:user.role,avatar:null,connected:true,hand:[],isBot:false};}
-function makeBotPlayer(n){return {userId:`bot-${Date.now()}-${n}`,username:['Calculinho','Fibonacci','Ada','Newton','Gauss','Euler','Turing','Hipátia'][n%8],role:'bot',avatar:null,connected:true,hand:[],isBot:true};}
-function roomSummary(room){return {code:room.code,name:room.name,ownerId:room.ownerId,ownerName:room.ownerName,locked:!!room.password,started:room.started,players:room.players.map((p,i)=>({userId:p.isBot?`player-${i+1}`:p.userId,username:p.isBot?`Jogador ${i+1}`:p.username,role:'player',connected:p.connected,cardCount:p.hand?.length||0})),options:room.options,createdAt:room.createdAt};}
+function makeRoomPlayer(user){return {userId:user.id,username:user.username,role:user.role,level:Number(user.level||1),xp:Number(user.xp||0),avatar:null,connected:true,hand:[],isBot:false};}
+function makeBotPlayer(n){return {userId:`bot-${Date.now()}-${n}`,username:['Calculinho','Fibonacci','Ada','Newton','Gauss','Euler','Turing','Hipátia'][n%8],role:'bot',level:Math.min(250,15+n*7),xp:0,avatar:null,connected:true,hand:[],isBot:true};}
+function roomSummary(room){return {code:room.code,name:room.name,ownerId:room.ownerId,ownerName:room.ownerName,locked:!!room.password,started:room.started,players:room.players.map(p=>({userId:p.userId,username:p.username,role:p.role,connected:p.connected,isBot:p.isBot,cardCount:p.hand?.length||0})),options:room.options,createdAt:room.createdAt};}
 function emitRoom(room){io.to(`room:${room.code}`).emit('room:update',roomSummary(room));io.emit('rooms:update');}
 function removePlayer(room,userId){const i=room.players.findIndex(p=>String(p.userId)===String(userId));if(i<0)return;if(room.started){room.players[i].connected=false;room.players[i].hand=[];io.to(`room:${room.code}`).emit('room:system',{message:`${room.players[i].username} saiu da partida.`});}else{room.players.splice(i,1);if(room.ownerId===userId&&room.players.length){room.ownerId=room.players[0].userId;room.ownerName=room.players[0].username;}if(!room.players.length)rooms.delete(room.code);else emitRoom(room);}}
 
 const COLORS=['red','yellow','green','blue'];
-function buildDeck(){const deck=[];for(const color of COLORS){for(let n=0;n<=9;n++)deck.push({id:crypto.randomUUID(),color,value:String(n),type:'number'});deck.push({id:crypto.randomUUID(),color,value:'',type:'skip'});deck.push({id:crypto.randomUUID(),color,value:'',type:'reverse'});deck.push({id:crypto.randomUUID(),color,value:'+2',type:'draw2'});}for(let i=0;i<4;i++){deck.push({id:crypto.randomUUID(),color:'black',value:'',type:'wild'});deck.push({id:crypto.randomUUID(),color:'black',value:'+4',type:'draw4'});}for(let i=deck.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[deck[i],deck[j]]=[deck[j],deck[i]];}return deck;}
+function buildDeck(){const deck=[];for(const color of COLORS){for(let n=0;n<=9;n++)deck.push({id:crypto.randomUUID(),color,value:String(n),type:'number'});deck.push({id:crypto.randomUUID(),color,value:'🚫',type:'skip'});deck.push({id:crypto.randomUUID(),color,value:'🔄',type:'reverse'});deck.push({id:crypto.randomUUID(),color,value:'+2',type:'draw2'});}for(let i=0;i<4;i++){deck.push({id:crypto.randomUUID(),color:'black',value:'🌈',type:'wild'});deck.push({id:crypto.randomUUID(),color:'black',value:'+4',type:'draw4'});}for(let i=deck.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[deck[i],deck[j]]=[deck[j],deck[i]];}return deck;}
 function playable(card,top,currentColor){return card.color==='black'||card.color===currentColor||card.value===top.value;}
-function startRoomGame(room){room.started=true;room.locked=true;const deck=buildDeck();room.game={deck,discard:[],currentColor:null,currentIndex:0,direction:1,pendingDraw:0,startedAt:Date.now(),lastAction:Date.now(),winner:null,matchId:crypto.randomUUID(),challenges:new Map()};room.players.forEach(p=>p.hand=[]);for(let n=0;n<room.options.startingCards;n++)for(const p of room.players){if(deck.length)p.hand.push(deck.pop());}let top;do{top=deck.pop();}while(top&&top.color==='black');room.game.discard=[top];room.game.currentColor=top.color;emitGame(room);if(room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),900);}
-function safeGameFor(player,room){const g=room.game;return {code:room.code,players:room.players.map((p,i)=>({userId:p.isBot?`player-${i+1}`:p.userId,username:p.isBot?`Jogador ${i+1}`:p.username,role:'player',connected:p.connected,cardCount:p.hand.length,avatar:p.avatar})),top:g.discard[g.discard.length-1],currentColor:g.currentColor,currentPlayerId:room.players[g.currentIndex]?.isBot?`player-${g.currentIndex+1}`:room.players[g.currentIndex]?.userId,direction:g.direction,pendingDraw:g.pendingDraw,deckCount:g.deck.length,hand:player?.hand||[],mapId:room.options.mapId,deckId:room.options.deckId,startedAt:g.startedAt,turnSeconds:room.options.turnSeconds,winner:g.winner};}
+
+async function recordMatchStart(room){
+  if(!usePostgres||!room?.game?.matchId)return;
+  try{
+    await pool.query(`INSERT INTO matches(id,mode,map_id,room_code,started_at,metadata) VALUES($1,'online',$2,$3,CURRENT_TIMESTAMP,$4::jsonb) ON CONFLICT(id) DO NOTHING`,[room.game.matchId,room.options.mapId,room.code,JSON.stringify({season:globalState.season_number||1,difficulty:room.options.difficulty})]);
+    for(const p of room.players.filter(x=>!x.isBot)) await pool.query(`INSERT INTO match_players(match_id,user_id,username_snapshot) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,[room.game.matchId,p.userId,p.username]);
+  }catch(e){console.error('match start log:',e.message);}
+}
+async function recordMatchEnd(room,winnerId){
+  if(!usePostgres||!room?.game?.matchId)return;
+  try{
+    await pool.query('UPDATE matches SET winner_user_id=$1,ended_at=CURRENT_TIMESTAMP WHERE id=$2',[winnerId,room.game.matchId]);
+    for(const p of room.players.filter(x=>!x.isBot)) await pool.query('UPDATE match_players SET result=$1 WHERE match_id=$2 AND user_id=$3',[String(p.userId)===String(winnerId)?'win':'loss',room.game.matchId,p.userId]);
+  }catch(e){console.error('match end log:',e.message);}
+}
+function startRoomGame(room){room.started=true;room.locked=true;const deck=buildDeck();room.game={deck,discard:[],currentColor:null,currentIndex:0,direction:1,pendingDraw:0,startedAt:Date.now(),lastAction:Date.now(),winner:null,matchId:crypto.randomUUID(),challenges:new Map()};room.players.forEach(p=>p.hand=[]);for(let n=0;n<room.options.startingCards;n++)for(const p of room.players){if(deck.length)p.hand.push(deck.pop());}let top;do{top=deck.pop();}while(top&&top.color==='black');room.game.discard=[top];room.game.currentColor=top.color;emitGame(room);if(room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),900);recordMatchStart(room);}
+function safeGameFor(player,room){const g=room.game;return {code:room.code,players:room.players.map((p,index)=>({userId:p.userId,username:p.username,role:p.role,level:Number(p.level||1),xp:Number(p.xp||0),prestige:prestigeForLevel(p.level||1),team:room.options.mode==='duo'||room.options.mode==='trio'?(index%2===0?'A':'B'):null,connected:p.connected,isBot:p.isBot,cardCount:p.hand.length,avatar:p.avatar})),top:g.discard[g.discard.length-1],currentColor:g.currentColor,currentPlayerId:room.players[g.currentIndex]?.userId,direction:g.direction,pendingDraw:g.pendingDraw,deckCount:g.deck.length,hand:player?.hand||[],mapId:room.options.mapId,deckId:room.options.deckId,startedAt:g.startedAt,turnSeconds:room.options.turnSeconds,winner:g.winner};}
 function emitGame(room){for(const p of room.players){if(p.isBot)continue;for(const [sid,u] of socketUsers){if(u.userId===p.userId)io.to(sid).emit('game:state',safeGameFor(p,room));}}}
 function nextIndex(room,steps=1){const g=room.game;let i=g.currentIndex;for(let n=0;n<steps;n++){do{i=(i+g.direction+room.players.length)%room.players.length;}while(room.players[i]&&!room.players[i].connected&&n<room.players.length); }return i;}
 function drawCards(room,player,count){for(let i=0;i<count;i++){if(!room.game.deck.length){const top=room.game.discard.pop();room.game.deck=room.game.discard.splice(0);room.game.discard=[top];for(let j=room.game.deck.length-1;j>0;j--){const k=Math.floor(Math.random()*(j+1));[room.game.deck[j],room.game.deck[k]]=[room.game.deck[k],room.game.deck[j]];}}if(room.game.deck.length)player.hand.push(room.game.deck.pop());}}
@@ -419,11 +566,11 @@ function turnAllowed(room,userId){return !globalState.paused&&room.started&&room
 function botTurn(room){if(!room.started||room.game.winner||globalState.paused)return;const p=room.players[room.game.currentIndex];if(!p?.isBot)return;let candidates=p.hand.filter(c=>playable(c,room.game.discard.at(-1),room.game.currentColor));if(room.game.pendingDraw>0&&!room.options.stackDraw)candidates=[];let card=candidates.sort((a,b)=>scoreCard(b)-scoreCard(a))[0];if(!card){drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.currentIndex=nextIndex(room,1);emitGame(room);setTimeout(()=>botTurn(room),800);return;}p.hand.splice(p.hand.indexOf(card),1);const color=card.color==='black'?chooseBotColor(p.hand):null;applyCard(room,p,card,color);checkRoomWinner(room,p);emitGame(room);if(!room.game.winner&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),900);}
 function scoreCard(c){return c.type==='draw4'?100:c.type==='draw2'?80:c.type==='wild'?70:c.type==='skip'?40:c.type==='reverse'?35:10;}
 function chooseBotColor(hand){const counts={red:0,yellow:0,green:0,blue:0};hand.forEach(c=>{if(counts[c.color]!=null)counts[c.color]++;});return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];}
-async function checkRoomWinner(room,player){if(player.hand.length!==0)return;room.game.winner=player.userId;room.started=false;room.locked=false;const realPlayers=room.players.filter(p=>!p.isBot);for(const p of realPlayers){const win=String(p.userId)===String(player.userId);await finishMatchPlayer(p,room,win);}emitGame(room);emitRoom(room);io.to(`room:${room.code}`).emit('game:winner',{username:player.isBot?'Jogador':player.username,userId:player.isBot?null:player.userId});}
-async function finishMatchPlayer(p,room,win){if(!usePostgres||p.isBot)return;const coins=win?150:25;const xp=win?250:60;try{await pool.query('BEGIN');const before=(await pool.query('SELECT xp FROM users WHERE id=$1 FOR UPDATE',[p.userId])).rows[0];const nextXp=Number(before?.xp||0)+xp;await pool.query('UPDATE users SET coins=coins+$1,xp=xp+$2,level=$3,wins=wins+$4,losses=losses+$5,games_played=games_played+1 WHERE id=$6',[coins,xp,levelForXp(nextXp),win?1:0,win?0:1,p.userId]);await pool.query('INSERT INTO matches(id,mode,difficulty,map_id,room_code,winner_user_id,ended_at) VALUES($1,$2,$3,$4,$5,$6,CURRENT_TIMESTAMP) ON CONFLICT (id) DO NOTHING',[room.game.matchId,room.options.maxPlayers===2?'solo':room.options.maxPlayers===3?'duo':'trio','classic',room.options.mapId,room.code,win?p.userId:room.game.winner]);await pool.query('INSERT INTO match_players(match_id,user_id,username_snapshot,result,coins_earned,xp_earned) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING',[room.game.matchId,p.userId,p.username,win?'win':'loss',coins,xp]);await pool.query('COMMIT');}catch(e){try{await pool.query('ROLLBACK')}catch{}}}
+async function checkRoomWinner(room,player){if(player.hand.length!==0)return;room.game.winner=player.userId;room.started=false;room.locked=false;const realPlayers=room.players.filter(p=>!p.isBot);for(const p of realPlayers){const win=String(p.userId)===String(player.userId);await finishMatchPlayer(p,room,win);}await recordMatchEnd(room,player.userId);emitGame(room);emitRoom(room);io.to(`room:${room.code}`).emit('game:winner',{username:player.username,userId:player.userId});}
+async function finishMatchPlayer(p,room,win){if(!usePostgres||p.isBot)return;const coins=win?150:25;const xp=win?250:60;try{await pool.query('BEGIN');await pool.query(`UPDATE users SET coins=coins+$1,xp=xp+$2,level=LEAST(250,$3),wins=wins+$4,losses=losses+$5,games_played=games_played+1 WHERE id=$6`,[coins,xp,levelForXp(Number((await pool.query('SELECT xp FROM users WHERE id=$1',[p.userId])).rows[0]?.xp||0)+xp),win?1:0,win?0:1,p.userId]);await pool.query('COMMIT');}catch{try{await pool.query('ROLLBACK')}catch{}}}
 
-async function getGlobalState(){if(!usePostgres)return {paused:false,message:''};const r=await pool.query('SELECT paused,message FROM global_game_state WHERE id=1');return r.rows[0]||{paused:false,message:''};}
-let globalState={paused:false,message:''};
+async function getGlobalState(){if(!usePostgres)return {paused:false,message:'',turn_seconds:45,season_name:'Temporada 01',season_number:1};const r=await pool.query('SELECT paused,message,turn_seconds,season_name,season_number FROM global_game_state WHERE id=1');return r.rows[0]||{paused:false,message:'',turn_seconds:45,season_name:'Temporada 01',season_number:1};}
+let globalState={paused:false,message:'',turn_seconds:45,season_name:'Temporada 01',season_number:1};
 
 io.use(async(socket,next)=>{const token=socket.handshake.auth?.token||parseCookies({headers:socket.handshake.headers}).uv_session;const payload=token&&verifyToken(token);if(!payload)return next(new Error('unauthorized'));const user=await getUserById(payload.id);if(!user)return next(new Error('unauthorized'));const mod=await activeModeration(user.id);if(mod?.action==='ban')return next(new Error('banned'));socketUsers.set(socket.id,{userId:user.id,username:user.username,role:user.role});socket.user=user;next();});
 
@@ -432,7 +579,7 @@ io.on('connection',socket=>{
   socket.on('room:join',async({code,password}={})=>{const room=rooms.get(String(code||'').toUpperCase());if(!room)return socket.emit('toast',{type:'error',message:'Sala não encontrada.'});if(room.started)return socket.emit('toast',{type:'error',message:'Partida já iniciada.'});if(room.password&&room.password!==String(password||''))return socket.emit('toast',{type:'error',message:'Senha incorreta.'});if(room.players.length>=room.options.maxPlayers)return socket.emit('toast',{type:'error',message:'Sala cheia.'});if(!room.players.some(p=>p.userId===me.id))room.players.push(makeRoomPlayer(me));socket.join(`room:${room.code}`);emitRoom(room);socket.emit('room:joined',roomSummary(room));});
   socket.on('room:leave',()=>{for(const room of rooms.values())if(room.players.some(p=>p.userId===me.id)){socket.leave(`room:${room.code}`);removePlayer(room,me.id);}});
   socket.on('room:start',()=>{for(const room of rooms.values())if(room.ownerId===me.id&&room.players.some(p=>p.userId===me.id)){if(room.players.length<2&&!room.options.allowBots)return socket.emit('toast',{type:'error',message:'Adicione outro jogador ou permita bots.'});if(globalState.paused)return socket.emit('toast',{type:'error',message:globalState.message});if(room.options.allowBots){while(room.players.length<room.options.maxPlayers&&room.players.length<room.options.botFill)room.players.push(makeBotPlayer(room.players.length));}if(room.players.length<2)return socket.emit('toast',{type:'error',message:'Não foi possível preencher a sala.'});startRoomGame(room);emitRoom(room);return;}});
-  socket.on('game:play',async({cardId,chosenColor}={})=>{const room=findPlayerRoom(me.id);if(!room)return socket.emit('toast',{type:'error',message:'Você não está em uma sala.'});if(globalState.paused)return socket.emit('toast',{type:'error',message:globalState.message||'Jogo pausado.'});if(!turnAllowed(room,me.id))return socket.emit('toast',{type:'error',message:'Não é sua vez.'});const p=room.players.find(x=>x.userId===me.id);const index=p.hand.findIndex(c=>c.id===cardId||c._clientId===cardId);if(index<0)return socket.emit('toast',{type:'error',message:'Carta inválida.'});const card=p.hand[index];if(!playable(card,room.game.discard.at(-1),room.game.currentColor))return socket.emit('toast',{type:'error',message:'Carta não pode ser jogada.'});p.hand.splice(index,1);applyCard(room,p,card,chosenColor);await checkRoomWinner(room,p);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
+  socket.on('game:play',async({cardId,chosenColor}={})=>{const room=findPlayerRoom(me.id);if(!room)return socket.emit('toast',{type:'error',message:'Você não está em uma sala.'});if(!turnAllowed(room,me.id))return socket.emit('toast',{type:'error',message:'Não é sua vez.'});const p=room.players.find(x=>x.userId===me.id);const index=p.hand.findIndex(c=>c.id===cardId||c._clientId===cardId);if(index<0)return socket.emit('toast',{type:'error',message:'Carta inválida.'});const card=p.hand[index];if(!playable(card,room.game.discard.at(-1),room.game.currentColor))return socket.emit('toast',{type:'error',message:'Carta não pode ser jogada.'});p.hand.splice(index,1);applyCard(room,p,card,chosenColor);await checkRoomWinner(room,p);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
   socket.on('game:draw',()=>{const room=findPlayerRoom(me.id);if(!room||!turnAllowed(room,me.id))return;const p=room.players.find(x=>x.userId===me.id);drawCards(room,p,room.game.pendingDraw||1);room.game.pendingDraw=0;room.game.currentIndex=nextIndex(room,1);emitGame(room);if(room.started&&room.players[room.game.currentIndex]?.isBot)setTimeout(()=>botTurn(room),800);});
   socket.on('chat:send',async({channel,body,roomCode,receiverId}={})=>{if(!rateLimit(chatRate,me.id,10000,12))return socket.emit('toast',{type:'error',message:'Você está enviando mensagens rápido demais.'});const text=cleanText(body,500);if(!text)return;const aiModeration=await geminiModerate(text);if(!aiModeration.allowed){if(usePostgres)await pool.query('INSERT INTO reports(reporter_id,target_id,reason,status) VALUES($1,$2,$3,$4)',[me.id,me.id,'Gemini bloqueou mensagem: '+cleanText(aiModeration.reason,220),'ai-block']);return socket.emit('toast',{type:'error',message:'Mensagem bloqueada pela moderação.'});}const mod=await activeModeration(me.id);if(mod?.action==='mute')return socket.emit('toast',{type:'error',message:'Você está silenciado.'});if(text.startsWith('/')&&me.role==='CEO'){const result=await executeAdminCommand(me,text);socket.emit('admin:result',result);return;}const ch=['world','room','private'].includes(channel)?channel:'world';let room=findPlayerRoom(me.id);if(ch==='room'&&(!room||room.code!==String(roomCode||room?.code).toUpperCase()))return;let targetSocket=null;if(ch==='private'){targetSocket=[...socketUsers.entries()].find(([,u])=>Number(u.userId)===Number(receiverId))?.[0];if(!targetSocket)return socket.emit('toast',{type:'error',message:'Jogador offline.'});}const msg={channel:ch,roomCode:room?.code||null,senderId:me.id,senderName:me.username,receiverId:receiverId||null,body:text,createdAt:new Date().toISOString()};if(usePostgres)await pool.query('INSERT INTO chat_messages(channel,room_code,sender_id,receiver_id,sender_name,body) VALUES($1,$2,$3,$4,$5,$6)',[ch,msg.roomCode,me.id,receiverId||null,me.username,text]);if(ch==='world')io.emit('chat:message',msg);else if(ch==='room')io.to(`room:${room.code}`).emit('chat:message',msg);else{socket.emit('chat:message',msg);if(targetSocket)io.to(targetSocket).emit('chat:message',msg);}});
   socket.on('disconnect',()=>{socketUsers.delete(socket.id);});
@@ -460,16 +607,16 @@ async function executeAdminCommand(me,text){const parts=text.trim().split(/\s+/)
 app.use((req,res,next)=>{if(req.path.startsWith('/api/')&&!res.headersSent&&req.method==='GET'&&req.path==='/api/unknown')return res.status(404).json({success:false});next();});
 
 server.listen(PORT,'0.0.0.0',()=>{
-  console.log(` UnoVelho Matematixa ativo na porta ${PORT}`);
+  console.log(`🚀 UnoVelho Matematixa ativo na porta ${PORT}`);
   databaseReadyPromise=(async()=>{
     try{
       await initDatabase();
       globalState=await getGlobalState();
       databaseReady=true;
-      console.log(' Banco de dados pronto para as requisições.');
+      console.log('✅ Banco de dados pronto para as requisições.');
     }catch(err){
       databaseReadyError=err;
-      console.error(' Falha ao finalizar inicialização do banco:',err.message);
+      console.error('❌ Falha ao finalizar inicialização do banco:',err.message);
     }
   })();
 });

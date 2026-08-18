@@ -176,17 +176,16 @@ EXCEPTION WHEN OTHERS THEN
   NULL;
 END $$;
 
-CREATE TABLE IF NOT EXISTS game_season (
-  id INT PRIMARY KEY CHECK (id=1),
-  season_number INT NOT NULL DEFAULT 1,
-  starts_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  ends_at TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL '30 days')
-);
-INSERT INTO game_season(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS podium_position INT;
+ALTER TABLE global_game_state ADD COLUMN IF NOT EXISTS turn_seconds INT NOT NULL DEFAULT 45;
+ALTER TABLE global_game_state ADD COLUMN IF NOT EXISTS season_name VARCHAR(120) NOT NULL DEFAULT 'Temporada 01';
+ALTER TABLE global_game_state ADD COLUMN IF NOT EXISTS season_number INT NOT NULL DEFAULT 1;
 
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='profiles' AND column_name='password_hash') THEN
-    ALTER TABLE profiles ALTER COLUMN password_hash DROP NOT NULL;
-  END IF;
-END $$;
+CREATE TABLE IF NOT EXISTS user_event_rewards (
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  event_id VARCHAR(80) NOT NULL,
+  item_id VARCHAR(80) NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+  claimed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, event_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_event_rewards_user ON user_event_rewards(user_id);
