@@ -1,8 +1,8 @@
 {
-  "name": "unovelho-matematixa-complete",
-  "version": "3.1.0",
+  "name": "uno50",
+  "version": "3.10.0",
   "private": true,
-  "description": "UnoVelho Matematixa - multiplayer UNO matemático com PostgreSQL, Socket.IO, loja, inventário, XP, chat e painel CEO.",
+  "description": "UNO50 multiplayer com PostgreSQL, Socket.IO, loja, inventário, ranking, histórico, temporadas e proteção de sessão.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
